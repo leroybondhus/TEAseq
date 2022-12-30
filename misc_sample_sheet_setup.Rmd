@@ -1,0 +1,53 @@
+---
+title: "misc_sample_sheet_setup"
+author: "Leroy Bondhus"
+date: '2022-12-30'
+output: html_document
+---
+
+```{r}
+sub_barcodes <- read.csv("sample_sheets/ATAC_0743_raw_combo_elements.csv",
+                         header = F)
+header <- read.csv("sample_sheets/120122-A_S2_T_Thauland_Multiome_ATAC.csv",
+                   header=F)
+header <- header[1:16,]
+
+colnames(sub_barcodes) <- c("Sample_Name","index_id",
+                            "index_p1","index_p2",
+                            "index_p3","index_p4")
+
+combs_df <- data.frame("Sample_Name"=character(),
+                       "index1"=character(),
+                       "index2"=character())
+for(i in 1:nrow(sub_barcodes)){
+  combs <- gtools::permutations(4,4,v=as.character(sub_barcodes[i,3:6]))
+  combs_df <- rbind(combs_df,
+                    data.frame("Sample_Name"=sub_barcodes[i,]$Sample_Name,
+                               "index1"=combs[,1],
+                               "index2"=apply(combs[,2:4],1,
+                                              paste,collapse="")))
+}
+
+temp <- cbind(data.frame("Lane"=rep(1,nrow(combs_df)),
+                 "Sample_ID"=combs_df$Sample_Name),
+      combs_df,
+      data.frame("Sample_Project"=paste0("bhaduria-",combs_df$Sample_Name),
+                 "Description"="")
+      )
+header <- header[,1:ncol(temp)]
+write.table(header,sep=",",file="sample_sheets/test.csv",
+            quote = F,col.names = F, row.names = F)
+write.table(temp,sep=",",file="sample_sheets/test.csv",
+            append = T,quote=F,row.names = F)
+
+
+temp_df <- data.frame(Lane=c(),"")
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
