@@ -1,0 +1,50 @@
+---
+title: "misc_sample_sheet_setup_teaseq2"
+author: "Leroy Bondhus"
+date: '2023-02-14'
+output: html_document
+---
+
+```{r}
+sub_barcodes <- read.csv("sample_sheets/TEAseq2/Single_Index_Kit_N_Set_A.csv",
+                         header = F)
+header <- read.csv("sample_sheets/TEAseq2/011623-A_Isabela_Buttem_10X_Mulltiome_ATAC.csv",
+                   header=F)
+header <- header[1:16,]
+atac_sample_sheet <- read.csv("sample_sheets/TEAseq2/011623-A_Isabela_Buttem_10X_Mulltiome_ATAC.csv",
+                              header=T,skip = 16)
+
+atac_sample_sheet <- atac_sample_sheet[,c("Sample_ID","Sample_Name", "index",
+                                          "Sample_Project", "Description")]
+atac_sample_sheet <- cbind(data.frame(Lane=NA),atac_sample_sheet)
+
+
+colnames(sub_barcodes) <- c("index_id",
+                            "index_p1","index_p2",
+                            "index_p3","index_p4")
+
+melt_sub_barcodes <- reshape2::melt(sub_barcodes,id.vars="index_id")
+
+temp <- merge(atac_sample_sheet, melt_sub_barcodes, by.x = "index",by.y = "index_id")
+temp$index <- temp$value
+atac_sample_sheet_out <- temp[,c("Lane","Sample_ID","Sample_Name", "index",
+                                 "Sample_Project", "Description")]
+atac_sample_sheet_out$Lane <- 1
+atac_sample_sheet_out$Sample_ID <- "MB"
+atac_sample_sheet_out$Sample_Name <- "MB"
+atac_sample_sheet_out$Sample_Project <- "Isabela-Buttem"
+temp <- atac_sample_sheet_out
+for(i in 2:4){
+  temp$Lane <- i
+  atac_sample_sheet_out <- rbind(atac_sample_sheet_out, temp)
+}
+
+
+write.table(header,sep=",",file="sample_sheets/TEAseq2/SampleSheet_0456_ATAC.csv",
+            quote = F,col.names = F, row.names = F)
+write.table(atac_sample_sheet_out,sep=",",
+            file="sample_sheets/TEAseq2/SampleSheet_0456_ATAC.csv",
+            append = T,quote=F,row.names = F)
+
+
+```

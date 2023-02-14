@@ -17,13 +17,13 @@ colnames(sub_barcodes) <- c("Sample_Name","index_id",
                             "index_p3","index_p4")
 
 combs_df <- data.frame("Sample_Name"=character(),
-                       "index1"=character(),
+                       "index"=character(),
                        "index2"=character())
 for(i in 1:nrow(sub_barcodes)){
   combs <- gtools::permutations(4,4,v=as.character(sub_barcodes[i,3:6]))
   combs_df <- rbind(combs_df,
                     data.frame("Sample_Name"=sub_barcodes[i,]$Sample_Name,
-                               "index1"=combs[,1],
+                               "index"=combs[,1],
                                "index2"=apply(combs[,2:4],1,
                                               paste,collapse="")))
 }
@@ -35,13 +35,15 @@ temp <- cbind(data.frame("Lane"=rep(1,nrow(combs_df)),
                  "Description"="")
       )
 header <- header[,1:ncol(temp)]
-write.table(header,sep=",",file="sample_sheets/test.csv",
+write.table(header,sep=",",file="sample_sheets/0743_all_perm.csv",
             quote = F,col.names = F, row.names = F)
-write.table(temp,sep=",",file="sample_sheets/test.csv",
+write.table(temp,sep=",",file="sample_sheets/0743_all_perm.csv",
             append = T,quote=F,row.names = F)
+temp2 <- temp
+temp2$Lane <- 2
+write.table(temp2,sep=",",file="sample_sheets/0743_all_perm.csv",
+            append = T,quote=F,row.names = F,col.names = F)
 
-
-temp_df <- data.frame(Lane=c(),"")
 ```
 
 ```{r}
