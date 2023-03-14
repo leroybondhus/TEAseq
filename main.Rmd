@@ -1,0 +1,237 @@
+---
+title: "main"
+author: "Leroy Bondhus"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, set up directories and files}
+dirs <- list(
+  results = "./results/",
+  figures = "./results/figures/",
+  tables = "./results/tables/"
+)
+for(dir in dirs){
+  if(!dir.exists(dir)){dir.create(dir)}
+};rm(dir)
+
+
+files <- list(
+  ADT_HTO_barcounter_out = "/u/project/arboleda/leroybon/TEMP_SPACE/0460_ADT_HTO_barcounter_out/IB_Tag_Counts.csv",
+  GEX_ATAC_out = "/u/project/arboleda/leroybon/TEMP_SPACE/0456_0460_arcout/cellranger_count_out_atac_rna/outs/filtered_feature_bc_matrix.h5",
+  ADT_HTO_features = "/u/project/arboleda/DATA/TEAseq2/raw/230119_A01060_0460_BHF2JGDSX5_bcls/ADT_HTO_feature_file.csv"
+)
+
+```
+
+
+```{r load packages, echo=FALSE, results='hide'}
+req_packages <- list(
+  standard = c("BiocManager","doParallel","ggplot2","stringr","data.table","Seurat","Signac","hdf5r"),
+  biocmanager = c("Gviz","biomaRt")
+)
+for(std_package in req_packages$standard ){
+  if(!require(std_package, quietly=T, character.only=T)){install.packages(std_package)}
+};rm(std_package)
+for(bioc_package in req_packages$biocmanager ){
+  if(!require(bioc_package, quietly=T, character.only=T)){BiocManager::install(bioc_package)}
+};rm(bioc_package)
+rm(req_packages)
+```
+
+```{r, rna + atac qc}
+gex_atac <- Read10X_h5(files$GEX_ATAC_out)
+
+
+
+rna_counts <- gex_atac$`Gene Expression`
+atac_counts <- gex_atac$Peaks
+
+blood_sc <- CreateSeuratObject(counts = rna_counts)
+atac_assay <- CreateChromatinAssay(counts = atac_counts)
+
+
+
+```
+
+
+```{r, hto + adt qc}
+ggl <- list()
+
+ADT_HTO_features <- read.csv(files$ADT_HTO_features)
+hto_adt <- (read.csv(files$ADT_HTO_barcounter_out))
+if(!all(grepl("-1", hto_adt$cell_barcode))){
+  hto_adt$cell_barcode <- paste0(hto_adt$cell_barcode,"-1" )
+}
+## need to set columns to be cells, rows to be features
+rownames(hto_adt) <- hto_adt$cell_barcode
+hto_adt$cell_barcode <- NULL
+hto_adt$total <- NULL
+
+
+hto_adt_subset <- t(hto_adt)[,which(is.element(colnames(t(hto_adt)),Cells(blood_sc)))]
+hto_adt_subset <- t(hto_adt_subset)
+hto_adt_subset <- as.data.frame(hto_adt_subset)
+colnames(hto_adt_subset) <- ADT_HTO_features$name[match(colnames(hto_adt_subset), ADT_HTO_features$id)]
+
+### look at distribution of cells with supermajority one UCD barcode
+
+df <- as.data.frame(hto_adt_subset[,grep("UCD",colnames(hto_adt_subset))])
+df$total <- rowSums(df[,grep("UCD",colnames(df))])
+prop_cutoff = 0.75
+count_cutoff = 1e2
+ggl[["HTO_01_proportion_v_total_HTO_counts"]] <- ggplot(df, aes(log10(total), UCD_01/total ))+
+  geom_point(alpha=0.1)+
+  geom_hline(yintercept = prop_cutoff)+
+  geom_vline(xintercept = log10(count_cutoff))
+
+UCDs <- ADT_HTO_features$name[grep("UCD",ADT_HTO_features$name)]
+UCD_counts <- data.frame(name=UCDs, count=-1)
+df$ucd_class <- NA
+hto_adt_subset$class <- NA
+for(UCD in UCDs){
+  df$ucd_class[which(df[UCD]/df$total > prop_cutoff & df$total > count_cutoff)] <- UCD
+  UCD_counts$count[which(UCD_counts$name==UCD)] <- length(which(df[UCD]/df$total > prop_cutoff & df$total > count_cutoff))
+  
+  
+  hto_adt_subset$class[which( (hto_adt_subset[UCD] / rowSums(hto_adt_subset[,grep("UCD",colnames(hto_adt_subset))])) > prop_cutoff & 
+                                rowSums(hto_adt_subset[,grep("UCD",colnames(hto_adt_subset))]) > count_cutoff)] <- UCD
+}
+ggl[["HTOs_relative_abundances"]] <- ggplot(df[which(!is.na(df$ucd_class)),], aes(ucd_class))+
+  geom_bar()
+
+### look at distribution of each cell surface marker
+hto_adt_subset
+df <- reshape2::melt(as.data.frame(hto_adt_subset))
+ggl[["ADT_and_HTO_abundances"]] <-  ggplot(df, aes(log10(value)))+
+  geom_histogram(bins=100)+
+  facet_wrap(. ~ variable)
+
+## repeat for each UCD_0[1-4]+ ##
+for(ucd in unique(df$class)){
+  if(is.na(ucd)){next}
+  ggl[[paste0(ucd, "__ADT_and_HTO_abundances")]] <- ggplot(df[which(df$class==ucd),],aes(log10(value)))+
+    geom_histogram(bins=100)+
+    facet_wrap(. ~ variable)
+}
+
+for(i in 1:length(ggl)){
+  ggsave(filename = paste0(dirs$figures,names(ggl)[i]),
+         plot = ggl[[i]],
+         device = "png",
+         width = 7,
+         height = 7,
+         units = "in",
+         dpi = 320)
+}
+
+### save plots ###
+
+## relative HTO abundances 
+
+## distribution of ADTs
+
+## distribution of ADTs by HTO
+
+###
+
+
+
+
+```
+
+
+```{r, add hto + adt to rna + atac}
+hto_adt <- t(hto_adt)
+adt_assay <- CreateAssayObject(counts = hto_adt)
+hto_adt_subset <- hto_adt[,which(is.element(colnames(hto_adt),Cells(blood_sc)))]
+
+```
+
+
+
+```{r}
+IB_Tag_Counts <- read.csv("/u/project/arboleda/leroybon/TEMP_SPACE/0460_ADT_HTO_barcounter_out/IB_Tag_Counts.csv")
+sc_mat <- Read10X("/u/project/arboleda/leroybon/TEMP_SPACE/0456_0460_arcout/cellranger_count_out_atac_rna/outs/filtered_feature_bc_matrix")
+```
+
+```{r}
+sc_so_rna <- CreateSeuratObject(counts = sc_mat$`Gene Expression`, min.cells = 3, min.features = 200)
+sc_so_atac <- CreateSeuratObject(counts = sc_mat$Peaks, min.cells = 3, min.features = 200)
+```
+
+
+
+```{r}
+sc_so_rna[["percent.mt"]] <- PercentageFeatureSet(sc_so_rna, pattern = "^MT-")
+VlnPlot(sc_so_rna, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+png(filename = paste0(dirs$figures,"percent_mt.png"))
+VlnPlot(sc_so_rna, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+dev.off()
+
+plot1 <- FeatureScatter(sc_so_rna, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(sc_so_rna, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+png(filename = paste0(dirs$figures,"countRNA_v_percent_mito.png"))
+plot1 + plot2
+dev.off()
+
+sc_so_rna <- subset(sc_so_rna, subset = nFeature_RNA > 200 & nFeature_RNA < 2500 & percent.mt < 5)
+sc_so_rna <- NormalizeData(sc_so_rna, normalization.method = "LogNormalize", scale.factor = 10000)
+
+
+sc_so_rna <- FindVariableFeatures(sc_so_rna, selection.method = "vst", nfeatures = 2000)
+
+# Identify the 10 most highly variable genes
+top10 <- head(VariableFeatures(sc_so_rna), 10)
+
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(sc_so_rna)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+png(filename = paste0(dirs$figures,"top_var.png"))
+plot2
+dev.off()
+
+
+all.genes <- rownames(sc_so_rna)
+sc_so_rna <- ScaleData(sc_so_rna, features = all.genes)
+
+
+sc_so_rna <- RunPCA(sc_so_rna, features = VariableFeatures(object = sc_so_rna))
+png(filename = paste0(dirs$figures,"pca_dim_loadings.png"))
+VizDimLoadings(sc_so_rna, dims = 1:4, reduction = "pca")
+dev.off()
+
+
+png(filename = paste0(dirs$figures,"pca1_v_pca2.png"))
+DimPlot(sc_so_rna, reduction = "pca")
+dev.off()
+
+png(filename = paste0(dirs$figures,"pca_heatmaps.png"))
+DimHeatmap(sc_so_rna, dims = 1:15, cells = 500, balanced = TRUE)
+dev.off()
+
+png(filename = paste0(dirs$figures,"pca_elbowplot.png"))
+ElbowPlot(sc_so_rna)
+dev.off()
+
+sc_so_rna <- FindNeighbors(sc_so_rna, dims = 1:10)
+sc_so_rna <- FindClusters(sc_so_rna, resolution = 0.5)
+
+
+sc_so_rna <- RunUMAP(sc_so_rna, dims = 1:10)
+png(filename = paste0(dirs$figures,"umap_plot.png"))
+DimPlot(sc_so_rna, reduction = "umap")
+dev.off()
+
+
+png(filename = paste0(dirs$figures,"markers_plot.png"))
+FeaturePlot(sc_so_rna, features = c("MS4A1", "GNLY", "CD3E", "CD14", "FCER1A", "FCGR3A", "LYZ", "PPBP",
+    "CD8A"))
+dev.off()
+```
+
