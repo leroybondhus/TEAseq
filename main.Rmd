@@ -21,9 +21,13 @@ for(dir in dirs){
 
 
 files <- list(
-  ADT_HTO_barcounter_out = "/u/project/arboleda/leroybon/TEMP_SPACE/0460_ADT_HTO_barcounter_out/IB_Tag_Counts.csv",
-  GEX_ATAC_out = "/u/project/arboleda/leroybon/TEMP_SPACE/0456_0460_arcout/cellranger_count_out_atac_rna/outs/filtered_feature_bc_matrix.h5",
-  ADT_HTO_features = "/u/project/arboleda/DATA/TEAseq2/raw/230119_A01060_0460_BHF2JGDSX5_bcls/ADT_HTO_feature_file.csv"
+  ADT_HTO_barcounter_out_0460 = "/u/project/arboleda/leroybon/TEMP_SPACE/0460_ADT_HTO_barcounter_out/IB_Tag_Counts.csv",
+  ADT_HTO_barcounter_out_0793 = "/u/project/arboleda/leroybon/TEMP_SPACE/0793_ADT_HTO_barcounter_out/IB_Tag_Counts.csv",
+  GEX_ATAC_out = "/u/project/arboleda/leroybon/TEMP_SPACE/0456_0460_0793_arcout_2/cellranger_count_out_atac_rna_2/outs/filtered_feature_bc_matrix.h5",
+  ADT_HTO_features_0460 = "/u/project/arboleda/DATA/TEAseq2/raw/230119_A01060_0460_BHF2JGDSX5_bcls/ADT_HTO_feature_file.csv",
+  ADT_HTO_features_0793 = "/u/project/arboleda/DATA/TEAseq2/raw/230224_A00269_0793_BHW27KDSX5_bcls/ADT_HTO_feature_file.csv",
+  ATAC_frag_file = "/u/project/arboleda/leroybon/TEMP_SPACE/0456_0460_0793_arcout_2/cellranger_count_out_atac_rna_2/outs/atac_fragments.tsv.gz",
+  pbmc_reference = "/u/project/arboleda/leroybon/TEMP_SPACE/pbmc_multimodal.h5seurat"
 )
 
 ```
@@ -31,8 +35,8 @@ files <- list(
 
 ```{r load packages, echo=FALSE, results='hide'}
 req_packages <- list(
-  standard = c("BiocManager","doParallel","ggplot2","stringr","data.table","Seurat","Signac","hdf5r"),
-  biocmanager = c("Gviz","biomaRt")
+  standard = c("BiocManager","doParallel","ggplot2","stringr","data.table","Seurat","Signac","hdf5r","cowplot", "dplyr"),
+  biocmanager = c("Gviz","biomaRt","EnsDb.Hsapiens.v86")
 )
 for(std_package in req_packages$standard ){
   if(!require(std_package, quietly=T, character.only=T)){install.packages(std_package)}
@@ -41,6 +45,19 @@ for(bioc_package in req_packages$biocmanager ){
   if(!require(bioc_package, quietly=T, character.only=T)){BiocManager::install(bioc_package)}
 };rm(bioc_package)
 rm(req_packages)
+
+remotes::install_github("mojaveazure/seurat-disk")
+library(SeuratDisk)
+```
+
+```{r}
+## import + load h5 reference
+if(!file.exists(files$pbmc_reference)){
+  download.file("https://atlas.fredhutch.org/data/nygc/multimodal/pbmc_multimodal.h5seurat",
+                files$pbmc_reference)  
+}
+
+reference <- LoadH5Seurat(files$pbmc_reference)
 ```
 
 ```{r, rna + atac qc}
@@ -52,61 +69,169 @@ rna_counts <- gex_atac$`Gene Expression`
 atac_counts <- gex_atac$Peaks
 
 blood_sc <- CreateSeuratObject(counts = rna_counts)
-atac_assay <- CreateChromatinAssay(counts = atac_counts)
+blood_sc[["percent.mt"]] <- PercentageFeatureSet(blood_sc,"^MT-")
+
+annotations <- GetGRangesFromEnsDb(ensdb=EnsDb.Hsapiens.v86::EnsDb.Hsapiens.v86)
+seqlevelsStyle(annotations) <- 'UCSC'
+genome(annotations) <- "hg38"
+atac_assay <- CreateChromatinAssay(counts = atac_counts,
+                                   sep=c(":","-"),
+                                   genome = "hg38",
+                                   fragments = files$ATAC_frag_file,
+                                   min.cells = 10) # ,
+                                   #annotations=annotations)
+blood_sc[["ATAC"]] <- atac_assay
+
+VlnPlot(blood_sc, features = c("nCount_ATAC", "nCount_RNA","percent.mt"), ncol = 3,
+  log = TRUE, pt.size = 0) + NoLegend()
+
+
+blood_sc <- subset(
+  x = blood_sc,
+  subset = nCount_ATAC < 1e5 &
+    nCount_ATAC > 1e3 &
+    nCount_RNA < 25000 &
+    nCount_RNA > 500 &
+    percent.mt < 20
+)
+```
+
+
+```{r}
+DefaultAssay(blood_sc) <- "RNA"
+blood_sc <- SCTransform(blood_sc, verbose = FALSE) %>% RunPCA() %>% RunUMAP(dims = 1:50, reduction.name = 'umap.rna', reduction.key = 'rnaUMAP_')
+
+DefaultAssay(blood_sc) <- "ATAC"
+blood_sc <- RunTFIDF(blood_sc)
+blood_sc <- FindTopFeatures(blood_sc, min.cutoff = 'q0')
+blood_sc <- RunSVD(blood_sc)
+blood_sc <- RunUMAP(blood_sc, reduction = 'lsi', dims = 2:50, reduction.name = "umap.atac", reduction.key = "atacUMAP_")
 
 
 
 ```
 
 
+
+```{r}
+# 
+# p1 <- DimPlot(blood_sc, reduction = "umap.rna") + #, group.by = "celltype", label = TRUE, label.size = 2.5, repel = TRUE) + 
+#   ggtitle("RNA")
+# p2 <- DimPlot(blood_sc, reduction = "umap.atac") + #, group.by = "celltype", label = TRUE, label.size = 2.5, repel = TRUE) + 
+#   ggtitle("ATAC")
+# p3 <- DimPlot(blood_sc, reduction = "wnn.umap") + #, group.by = "celltype", label = TRUE, label.size = 2.5, repel = TRUE) + 
+#   ggtitle("WNN")
+# p1 + p2 + p3 & theme(plot.title = element_text(hjust = 0.5))  & NoLegend()
+```
+
+
 ```{r, hto + adt qc}
 ggl <- list()
 
-ADT_HTO_features <- read.csv(files$ADT_HTO_features)
-hto_adt <- (read.csv(files$ADT_HTO_barcounter_out))
-if(!all(grepl("-1", hto_adt$cell_barcode))){
-  hto_adt$cell_barcode <- paste0(hto_adt$cell_barcode,"-1" )
+ADT_HTO_features_0460 <- read.csv(files$ADT_HTO_features_0460)
+hto_adt_0460 <- (read.csv(files$ADT_HTO_barcounter_out_0460))
+if(!all(grepl("-1", hto_adt_0460$cell_barcode))){
+  hto_adt_0460$cell_barcode <- paste0(hto_adt_0460$cell_barcode,"-1" )
 }
 ## need to set columns to be cells, rows to be features
-rownames(hto_adt) <- hto_adt$cell_barcode
-hto_adt$cell_barcode <- NULL
-hto_adt$total <- NULL
+rownames(hto_adt_0460) <- hto_adt_0460$cell_barcode
+hto_adt_0460$cell_barcode <- NULL
+hto_adt_0460$total <- NULL
+
+hto_adt_subset_0460 <- t(hto_adt_0460)[,which(is.element(colnames(t(hto_adt_0460)),Cells(blood_sc)))]
+hto_adt_subset_0460 <- t(hto_adt_subset_0460)
+hto_adt_subset_0460 <- as.data.frame(hto_adt_subset_0460)
+colnames(hto_adt_subset_0460) <- ADT_HTO_features_0460$name[match(colnames(hto_adt_subset_0460), ADT_HTO_features_0460$id)]
 
 
-hto_adt_subset <- t(hto_adt)[,which(is.element(colnames(t(hto_adt)),Cells(blood_sc)))]
-hto_adt_subset <- t(hto_adt_subset)
-hto_adt_subset <- as.data.frame(hto_adt_subset)
-colnames(hto_adt_subset) <- ADT_HTO_features$name[match(colnames(hto_adt_subset), ADT_HTO_features$id)]
+df <- as.data.frame(hto_adt_subset_0460[,grep("UCD|VFI|KCMS|UCLA",colnames(hto_adt_subset_0460))])
+df$total <- rowSums(df[,grep("UCD|VFI|KCMS|UCLA",colnames(df))])
+prop_cutoff = 0.75
+count_cutoff = 1e2
+
+UCDs <- ADT_HTO_features_0460$name[grep("UCD|VFI|KCMS|UCLA",ADT_HTO_features_0460$name)]
+UCD_counts <- data.frame(name=UCDs, count=-1)
+df$ucd_class <- NA
+hto_adt_subset_0460$class <- NA
+for(UCD in UCDs){
+  df$ucd_class[which(df[UCD]/df$total > prop_cutoff & df$total > count_cutoff)] <- UCD
+  UCD_counts$count[which(UCD_counts$name==UCD)] <- length(which(df[UCD]/df$total > prop_cutoff & df$total > count_cutoff))
+  which <- which( (hto_adt_subset_0460[UCD] / rowSums(hto_adt_subset_0460[,grep("UCD",colnames(hto_adt_subset_0460))])) > prop_cutoff &
+               rowSums(hto_adt_subset_0460[,grep("UCD",colnames(hto_adt_subset_0460))]) > count_cutoff)
+  hto_adt_subset_0460$class[which] <- UCD
+}
+
+
+#########
+ADT_HTO_features_0793 <- read.csv(files$ADT_HTO_features_0793)
+hto_adt_0793 <- (read.csv(files$ADT_HTO_barcounter_out_0793))
+if(!all(grepl("-1", hto_adt_0793$cell_barcode))){
+  hto_adt_0793$cell_barcode <- paste0(hto_adt_0793$cell_barcode,"-1" )
+}
+## need to set columns to be cells, rows to be features
+rownames(hto_adt_0793) <- hto_adt_0793$cell_barcode
+hto_adt_0793$cell_barcode <- NULL
+hto_adt_0793$total <- NULL
+
+hto_adt_subset_0793 <- t(hto_adt_0793)[,which(is.element(colnames(t(hto_adt_0793)),Cells(blood_sc)))]
+hto_adt_subset_0793 <- t(hto_adt_subset_0793)
+hto_adt_subset_0793 <- as.data.frame(hto_adt_subset_0793)
+colnames(hto_adt_subset_0793) <- ADT_HTO_features_0793$name[match(colnames(hto_adt_subset_0793), ADT_HTO_features_0793$id)]
+
+
+df <- as.data.frame(hto_adt_subset_0793[,grep("UCD|VFI|KCMS|UCLA",colnames(hto_adt_subset_0793))])
+df$total <- rowSums(df[,grep("UCD|VFI|KCMS|UCLA",colnames(df))])
+prop_cutoff = 0.75
+count_cutoff = 1e2
+
+UCDs <- ADT_HTO_features_0793$name[grep("UCD|VFI|KCMS|UCLA",ADT_HTO_features_0793$name)]
+UCD_counts <- data.frame(name=UCDs, count=-1)
+df$ucd_class <- NA
+hto_adt_subset_0793$class <- NA
+for(UCD in UCDs){
+  df$ucd_class[which(df[UCD]/df$total > prop_cutoff & df$total > count_cutoff)] <- UCD
+  UCD_counts$count[which(UCD_counts$name==UCD)] <- length(which(df[UCD]/df$total > prop_cutoff & df$total > count_cutoff))
+  which <- which( (hto_adt_subset_0793[UCD] / rowSums(hto_adt_subset_0793[,grep("UCD",colnames(hto_adt_subset_0793))])) > prop_cutoff &
+               rowSums(hto_adt_subset_0793[,grep("UCD",colnames(hto_adt_subset_0793))]) > count_cutoff)
+  hto_adt_subset_0793$class[which] <- UCD
+}
+
+########## combine 0460 and 0793
+
+temp_row_names <- unique(c(rownames(hto_adt_subset_0460),rownames(hto_adt_subset_0793)))
+temp_row_names <- sort(temp_row_names)
+temp_col_names <- unique(c(colnames(hto_adt_subset_0460), colnames(hto_adt_subset_0793)))
+temp_col_names <- c(temp_col_names[grep("UCD|VFI|KCMS|UCLA",temp_col_names)],
+                    temp_col_names[grep("UCD|VFI|KCMS|UCLA|class",temp_col_names, invert = T)],
+                    temp_col_names[grep("class",temp_col_names)])
+hto_adt_subset_all <- matrix(nrow=length(temp_row_names),
+                             ncol=length(temp_col_names),
+                             dimnames = list(temp_row_names,temp_col_names))
+hto_adt_subset_all <- as.data.frame(hto_adt_subset_all)
+
+which_rows <- rownames(hto_adt_subset_0460)[!is.na(hto_adt_subset_0460$class)]
+which_cols <- colnames(hto_adt_subset_0460)
+hto_adt_subset_all[which_rows,which_cols] <- hto_adt_subset_0460[which_rows,which_cols]
+which_rows <- rownames(hto_adt_subset_0793)[!is.na(hto_adt_subset_0793$class)]
+which_cols <- colnames(hto_adt_subset_0793)
+hto_adt_subset_all[which_rows,which_cols] <- hto_adt_subset_0793[which_rows,which_cols]
+####
+ggl[["HTOs_relative_abundances"]] <- ggplot(hto_adt_subset_all[which(!is.na(hto_adt_subset_all$class)),], aes(class))+
+  geom_bar() + 
+  theme(axis.title = element_text(size=18),
+        axis.text = element_text(size=16),
+        axis.text.x = element_text(angle = 45,hjust=1))
+
 
 ### look at distribution of cells with supermajority one UCD barcode
 
-df <- as.data.frame(hto_adt_subset[,grep("UCD",colnames(hto_adt_subset))])
-df$total <- rowSums(df[,grep("UCD",colnames(df))])
-prop_cutoff = 0.75
-count_cutoff = 1e2
-ggl[["HTO_01_proportion_v_total_HTO_counts"]] <- ggplot(df, aes(log10(total), UCD_01/total ))+
+ggl[["UCD_17_proportion_v_total_HTO_counts"]] <- ggplot(df, aes(log10(total), UCD_17/total ))+
   geom_point(alpha=0.1)+
   geom_hline(yintercept = prop_cutoff)+
   geom_vline(xintercept = log10(count_cutoff))
 
-UCDs <- ADT_HTO_features$name[grep("UCD",ADT_HTO_features$name)]
-UCD_counts <- data.frame(name=UCDs, count=-1)
-df$ucd_class <- NA
-hto_adt_subset$class <- NA
-for(UCD in UCDs){
-  df$ucd_class[which(df[UCD]/df$total > prop_cutoff & df$total > count_cutoff)] <- UCD
-  UCD_counts$count[which(UCD_counts$name==UCD)] <- length(which(df[UCD]/df$total > prop_cutoff & df$total > count_cutoff))
-  
-  
-  hto_adt_subset$class[which( (hto_adt_subset[UCD] / rowSums(hto_adt_subset[,grep("UCD",colnames(hto_adt_subset))])) > prop_cutoff & 
-                                rowSums(hto_adt_subset[,grep("UCD",colnames(hto_adt_subset))]) > count_cutoff)] <- UCD
-}
-ggl[["HTOs_relative_abundances"]] <- ggplot(df[which(!is.na(df$ucd_class)),], aes(ucd_class))+
-  geom_bar()
-
 ### look at distribution of each cell surface marker
-hto_adt_subset
-df <- reshape2::melt(as.data.frame(hto_adt_subset))
+df <- reshape2::melt(as.data.frame(hto_adt_subset_all))
 ggl[["ADT_and_HTO_abundances"]] <-  ggplot(df, aes(log10(value)))+
   geom_histogram(bins=100)+
   facet_wrap(. ~ variable)
@@ -140,98 +265,77 @@ for(i in 1:length(ggl)){
 ###
 
 
-
-
 ```
+
 
 
 ```{r, add hto + adt to rna + atac}
-hto_adt <- t(hto_adt)
-adt_assay <- CreateAssayObject(counts = hto_adt)
-hto_adt_subset <- hto_adt[,which(is.element(colnames(hto_adt),Cells(blood_sc)))]
+
+
+hto <-hto_adt_subset_all[,grepl("UCD|VFI|KCMS|UCLA",colnames(hto_adt_subset_all))]
+which(is.na(hto))
+adt <- hto_adt_subset_all[,!grepl("UCD|VFI|KCMS|UCLA|class",colnames(hto_adt_subset_all))]
+
+missing_cells <- Cells(blood_sc)[which(!is.element(Cells(blood_sc), rownames(adt) ))]
+missing_cells_df <- as.data.frame(matrix(nrow=length(missing_cells), ncol = length(adt[0,]),
+                                         dimnames = list(missing_cells, colnames(adt))))
+adt <- rbind(adt, missing_cells_df)
+adt <- adt[Cells(blood_sc),]
+adt <- as.matrix(adt)
+adt[which(is.na(adt))] <- 0
+adt <- as.data.frame(adt)
+adt_assay <- CreateAssayObject(t(adt))
+
+blood_sc[["ADT"]] <- adt_assay
+DefaultAssay(blood_sc) <- "ADT"
+VariableFeatures(blood_sc) <- rownames(blood_sc[["ADT"]])
+blood_sc <- NormalizeData(blood_sc, normalization.method = 'CLR', margin = 2) %>% 
+  ScaleData() %>% RunPCA(reduction.name = 'apca')
+
+
+# blood_sc <- FindMultiModalNeighbors(blood_sc, reduction.list = list("pca","lsi"), dims.list = list(1:50,2:50))
+# blood_sc <- RunUMAP(blood_sc, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_")
+# blood_sc <- FindClusters(blood_sc, graph.name = "wsnn", algorithm = 3, verbose = FALSE)
+# 
+
+blood_sc <- FindMultiModalNeighbors(blood_sc, reduction.list = list("pca","lsi", "apca"), dims.list = list(1:50,2:50,1:29))
+blood_sc <- RunUMAP(blood_sc, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_")
+blood_sc <- FindClusters(blood_sc, graph.name = "wsnn", algorithm = 3, verbose = FALSE)
+
+
+
+
+blood_sc <- SCTransform(blood_sc)
+anchors <- FindTransferAnchors(
+  reference = reference,
+  query = blood_sc,
+  normalization.method = "SCT",
+  reference.reduction = "spca",
+  dims=1:50
+)
+
+
+blood_sc <- MapQuery(
+  anchorset = anchors,
+  query = blood_sc,
+  reference = reference,
+  refdata = list(
+    celltype.l1 = "celltype.l1",
+    celltype.l2 = "celltype.l2",
+    predicted_ADT = "ADT"
+  ),
+  reference.reduction = "spca", 
+  reduction.model = "wnn.umap"
+)
+
+p1 = DimPlot(blood_sc, reduction = "ref.umap", group.by = "predicted.celltype.l1", label = TRUE, label.size = 3, repel = TRUE) + NoLegend()
+p2 = DimPlot(blood_sc, reduction = "ref.umap", group.by = "predicted.celltype.l2", label = TRUE, label.size = 3 ,repel = TRUE) + NoLegend()
+p1 + p2
+
+
 
 ```
-
-
 
 ```{r}
-IB_Tag_Counts <- read.csv("/u/project/arboleda/leroybon/TEMP_SPACE/0460_ADT_HTO_barcounter_out/IB_Tag_Counts.csv")
-sc_mat <- Read10X("/u/project/arboleda/leroybon/TEMP_SPACE/0456_0460_arcout/cellranger_count_out_atac_rna/outs/filtered_feature_bc_matrix")
+save.image()
 ```
-
-```{r}
-sc_so_rna <- CreateSeuratObject(counts = sc_mat$`Gene Expression`, min.cells = 3, min.features = 200)
-sc_so_atac <- CreateSeuratObject(counts = sc_mat$Peaks, min.cells = 3, min.features = 200)
-```
-
-
-
-```{r}
-sc_so_rna[["percent.mt"]] <- PercentageFeatureSet(sc_so_rna, pattern = "^MT-")
-VlnPlot(sc_so_rna, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
-
-png(filename = paste0(dirs$figures,"percent_mt.png"))
-VlnPlot(sc_so_rna, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
-dev.off()
-
-plot1 <- FeatureScatter(sc_so_rna, feature1 = "nCount_RNA", feature2 = "percent.mt")
-plot2 <- FeatureScatter(sc_so_rna, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
-png(filename = paste0(dirs$figures,"countRNA_v_percent_mito.png"))
-plot1 + plot2
-dev.off()
-
-sc_so_rna <- subset(sc_so_rna, subset = nFeature_RNA > 200 & nFeature_RNA < 2500 & percent.mt < 5)
-sc_so_rna <- NormalizeData(sc_so_rna, normalization.method = "LogNormalize", scale.factor = 10000)
-
-
-sc_so_rna <- FindVariableFeatures(sc_so_rna, selection.method = "vst", nfeatures = 2000)
-
-# Identify the 10 most highly variable genes
-top10 <- head(VariableFeatures(sc_so_rna), 10)
-
-# plot variable features with and without labels
-plot1 <- VariableFeaturePlot(sc_so_rna)
-plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
-png(filename = paste0(dirs$figures,"top_var.png"))
-plot2
-dev.off()
-
-
-all.genes <- rownames(sc_so_rna)
-sc_so_rna <- ScaleData(sc_so_rna, features = all.genes)
-
-
-sc_so_rna <- RunPCA(sc_so_rna, features = VariableFeatures(object = sc_so_rna))
-png(filename = paste0(dirs$figures,"pca_dim_loadings.png"))
-VizDimLoadings(sc_so_rna, dims = 1:4, reduction = "pca")
-dev.off()
-
-
-png(filename = paste0(dirs$figures,"pca1_v_pca2.png"))
-DimPlot(sc_so_rna, reduction = "pca")
-dev.off()
-
-png(filename = paste0(dirs$figures,"pca_heatmaps.png"))
-DimHeatmap(sc_so_rna, dims = 1:15, cells = 500, balanced = TRUE)
-dev.off()
-
-png(filename = paste0(dirs$figures,"pca_elbowplot.png"))
-ElbowPlot(sc_so_rna)
-dev.off()
-
-sc_so_rna <- FindNeighbors(sc_so_rna, dims = 1:10)
-sc_so_rna <- FindClusters(sc_so_rna, resolution = 0.5)
-
-
-sc_so_rna <- RunUMAP(sc_so_rna, dims = 1:10)
-png(filename = paste0(dirs$figures,"umap_plot.png"))
-DimPlot(sc_so_rna, reduction = "umap")
-dev.off()
-
-
-png(filename = paste0(dirs$figures,"markers_plot.png"))
-FeaturePlot(sc_so_rna, features = c("MS4A1", "GNLY", "CD3E", "CD14", "FCER1A", "FCGR3A", "LYZ", "PPBP",
-    "CD8A"))
-dev.off()
-```
-
