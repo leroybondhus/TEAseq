@@ -67,20 +67,21 @@ gex_atac <- Read10X_h5(files$GEX_ATAC_out)
 
 rna_counts <- gex_atac$`Gene Expression`
 atac_counts <- gex_atac$Peaks
+rm(gex_atac)
 
 blood_sc <- CreateSeuratObject(counts = rna_counts)
+rm(rna_counts)
 blood_sc[["percent.mt"]] <- PercentageFeatureSet(blood_sc,"^MT-")
 
 annotations <- GetGRangesFromEnsDb(ensdb=EnsDb.Hsapiens.v86::EnsDb.Hsapiens.v86)
 seqlevelsStyle(annotations) <- 'UCSC'
 genome(annotations) <- "hg38"
-atac_assay <- CreateChromatinAssay(counts = atac_counts,
+blood_sc[["ATAC"]] <- CreateChromatinAssay(counts = atac_counts,
                                    sep=c(":","-"),
                                    genome = "hg38",
                                    fragments = files$ATAC_frag_file,
                                    min.cells = 10) # ,
                                    #annotations=annotations)
-blood_sc[["ATAC"]] <- atac_assay
 
 VlnPlot(blood_sc, features = c("nCount_ATAC", "nCount_RNA","percent.mt"), ncol = 3,
   log = TRUE, pt.size = 0) + NoLegend()
@@ -299,6 +300,7 @@ blood_sc <- NormalizeData(blood_sc, normalization.method = 'CLR', margin = 2) %>
 # 
 
 blood_sc <- FindMultiModalNeighbors(blood_sc, reduction.list = list("pca","lsi", "apca"), dims.list = list(1:50,2:50,1:29))
+blood_sc <- FindMultiModalNeighbors(blood_sc, reduction.list = list("lsi", "apca"), dims.list = list(2:50,1:29))
 blood_sc <- RunUMAP(blood_sc, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_")
 blood_sc <- FindClusters(blood_sc, graph.name = "wsnn", algorithm = 3, verbose = FALSE)
 
@@ -332,7 +334,10 @@ p1 = DimPlot(blood_sc, reduction = "ref.umap", group.by = "predicted.celltype.l1
 p2 = DimPlot(blood_sc, reduction = "ref.umap", group.by = "predicted.celltype.l2", label = TRUE, label.size = 3 ,repel = TRUE) + NoLegend()
 p1 + p2
 
-
+p3 = DimPlot(blood_sc, reduction = "umap.rna") + NoLegend()
+p4 = DimPlot(blood_sc, reduction = "umap.atac") + NoLegend()
+p5 = DimPlot(blood_sc, reduction = "wnn.umap") + NoLegend()
+p3 + p4 + p5
 
 ```
 
