@@ -30,10 +30,14 @@ files <- list(
   pbmc_reference = "/u/project/arboleda/leroybon/TEMP_SPACE/pbmc_multimodal.h5seurat"
 )
 
+date <- format(Sys.time(), "%y%m%d")
 ```
 
 
 ```{r load packages, echo=FALSE, results='hide'}
+remotes::install_github("mojaveazure/seurat-disk")
+library(SeuratDisk)
+
 req_packages <- list(
   standard = c("BiocManager","doParallel","ggplot2","stringr","data.table","Seurat","Signac","hdf5r","cowplot", "dplyr"),
   biocmanager = c("Gviz","biomaRt","EnsDb.Hsapiens.v86")
@@ -46,8 +50,6 @@ for(bioc_package in req_packages$biocmanager ){
 };rm(bioc_package)
 rm(req_packages)
 
-remotes::install_github("mojaveazure/seurat-disk")
-library(SeuratDisk)
 ```
 
 ```{r}
@@ -293,16 +295,19 @@ VariableFeatures(blood_sc) <- rownames(blood_sc[["ADT"]])
 blood_sc <- NormalizeData(blood_sc, normalization.method = 'CLR', margin = 2) %>% 
   ScaleData() %>% RunPCA(reduction.name = 'apca')
 
+blood_sc <- RunUMAP(blood_sc, reduction = 'apca', dims = 1:29, assay = 'ADT', 
+              reduction.name = 'umap.adt', reduction.key = 'adtUMAP_')
 
-# blood_sc <- FindMultiModalNeighbors(blood_sc, reduction.list = list("pca","lsi"), dims.list = list(1:50,2:50))
-# blood_sc <- RunUMAP(blood_sc, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_")
-# blood_sc <- FindClusters(blood_sc, graph.name = "wsnn", algorithm = 3, verbose = FALSE)
-# 
 
-blood_sc <- FindMultiModalNeighbors(blood_sc, reduction.list = list("pca","lsi", "apca"), dims.list = list(1:50,2:50,1:29))
-blood_sc <- FindMultiModalNeighbors(blood_sc, reduction.list = list("lsi", "apca"), dims.list = list(2:50,1:29))
+blood_sc <- FindMultiModalNeighbors(blood_sc, reduction.list = list("pca","lsi"), dims.list = list(1:50,2:50))
 blood_sc <- RunUMAP(blood_sc, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_")
 blood_sc <- FindClusters(blood_sc, graph.name = "wsnn", algorithm = 3, verbose = FALSE)
+# 
+
+# blood_sc <- FindMultiModalNeighbors(blood_sc, reduction.list = list("pca","lsi", "apca"), dims.list = list(1:50,2:50,1:29))
+# blood_sc <- FindMultiModalNeighbors(blood_sc, reduction.list = list("lsi", "apca"), dims.list = list(2:50,1:29))
+# blood_sc <- RunUMAP(blood_sc, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_")
+# blood_sc <- FindClusters(blood_sc, graph.name = "wsnn", algorithm = 3, verbose = FALSE)
 
 
 
@@ -332,15 +337,157 @@ blood_sc <- MapQuery(
 
 p1 = DimPlot(blood_sc, reduction = "ref.umap", group.by = "predicted.celltype.l1", label = TRUE, label.size = 3, repel = TRUE) + NoLegend()
 p2 = DimPlot(blood_sc, reduction = "ref.umap", group.by = "predicted.celltype.l2", label = TRUE, label.size = 3 ,repel = TRUE) + NoLegend()
-p1 + p2
 
-p3 = DimPlot(blood_sc, reduction = "umap.rna") + NoLegend()
-p4 = DimPlot(blood_sc, reduction = "umap.atac") + NoLegend()
+png(paste0(dirs$figures,date,"_w_ReferenceAnchors.png"),
+    res = 300, width = 8, height = 6, units = "in")
+p1 + p2
+dev.off()
+
+
+p3 = DimPlot(blood_sc, reduction = "umap.atac") + NoLegend()
+p4 = DimPlot(blood_sc, reduction = "umap.rna") + NoLegend()
 p5 = DimPlot(blood_sc, reduction = "wnn.umap") + NoLegend()
-p3 + p4 + p5
+p6 = DimPlot(blood_sc, reduction = "umap.adt") + NoLegend()
+
+
+for(red in c("umap.atac", "umap.rna", "umap.adt","wnn.umap")){
+  png(paste0(dirs$figures,date,"_",red,".png"),
+      res = 220, width = 4, height = 6, units = "in")
+  p <- DimPlot(blood_sc, reduction = red) + NoLegend()
+  print(p)
+  dev.off()
+}
+
+
+
+
+
+
+
+
+
+
+
+VlnPlot(blood_sc, features = "ATAC.weight", group.by = 'predicted.celltype.l2', sort = TRUE, pt.size = 0.01) +
+  NoLegend()
 
 ```
 
 ```{r}
 save.image()
+```
+
+
+
+```{r}
+## differential analysis by cell type by patient Th+ Th- 
+## Th2 : UCD5, VFI23, KCMS135, KCMS177, UCLA357, UCLA305, UCLA324, KCMS238
+## Th1 : all others
+
+ c(hto_adt_subset_all$class) 
+temp_hto <- hto_adt_subset_all$class
+names(temp_hto) <- rownames(hto_adt_subset_all)
+
+not_in_temp_hto <- Cells(blood_sc)[which(!is.element(Cells(blood_sc), names(temp_hto)))]
+temp_hto <- c(temp_hto, rep(NA,length(not_in_temp_hto) ))
+names(temp_hto)[length(temp_hto)] <- not_in_temp_hto 
+temp_hto <- temp_hto[match(names(temp_hto),Cells(blood_sc) )]
+
+all(names(temp_hto) == Cells(blood_sc) )
+
+blood_sc[["UCD"]] <- temp_hto
+
+th1 <-  c("UCD_17" , "KCMS_130", "UCD_9","UCLA_355","UCD_18", "UCD_8", "KCMS_133","KCMS_136")
+th2 <-  c("UCD_05" , "VFI_23", "KCMS_135","KCMS_177","UCLA_357", "UCLA_305", "UCLA_324","KCMS_238")
+ucd_th1_th2_map <- data.frame(
+  sample_name = c(th1, th2),
+  sample_type = c(rep("Th1", length(th1)),rep("Th2",length(th2)))
+)
+### .... subset ... cell type x patient -> estimate patient mean -> estimate group mean -> t.test between groups 
+
+ucd_th1_th2_map
+
+ncol = length(ucd_th1_th2_map$sample_name)
+pats <- ucd_th1_th2_map$sample_name
+cell_types <- unique(blood_sc$predicted.celltype.l2)
+pat_cell_combos <- apply(merge(pats, cell_types),1,paste,collapse="::")
+feature_by_pat_cell_combos <- list(
+  RNA = matrix(numeric(), nrow = nrow(blood_sc@assays$RNA),
+               ncol = length(pat_cell_combos),
+               dimnames = list(rownames(blood_sc@assays$RNA),
+                               pat_cell_combos)),
+  ATAC = matrix(numeric(),nrow = nrow(blood_sc@assays$ATAC),
+                ncol = length(pat_cell_combos),
+                dimnames = list(rownames(blood_sc@assays$ATAC),
+                                pat_cell_combos)),
+  ADT = matrix(numeric(),nrow = nrow(blood_sc@assays$ADT),
+               ncol = length(pat_cell_combos),
+               dimnames = list(rownames(blood_sc@assays$ADT),
+                               pat_cell_combos)),
+  cell_counts =  matrix(numeric(), nrow=1,
+                        ncol = length(pat_cell_combos),
+                        dimnames = list("count",
+                                        pat_cell_combos)) )
+
+for(combo in pat_cell_combos){
+  print(which(pat_cell_combos == combo))
+  pat <- str_remove(combo,"::.*")
+  cell <- str_remove(combo,".*::")
+  ## count cells in group (pat & cell) 
+  which <- which(blood_sc$UCD == pat & blood_sc$predicted.celltype.l2 == cell)
+  feature_by_pat_cell_combos$cell_counts[1, combo] <- length(which)
+  feature_by_pat_cell_combos$RNA[,combo] <- rowSums(blood_sc@assays$RNA[,which])
+  feature_by_pat_cell_combos$ATAC[,combo] <- rowSums(blood_sc@assays$ATAC[,which])
+  feature_by_pat_cell_combos$ADT[,combo] <- rowSums(blood_sc@assays$ADT[,which])
+}
+## collect 
+
+
+### Get canonical gene transcript size ## rm mito? ##
+
+ensembl <- useEnsembl(biomart="ensembl", dataset="hsapiens_gene_ensembl")
+options(timeout=300)
+gene_sets <- list()
+gene_sets$genes_all_transcript <- getBM(attributes=c('ensembl_gene_id',"external_gene_name",
+                                                     "ensembl_transcript_id","transcript_length",
+                                                     "chromosome_name", "transcript_is_canonical",
+                                                     "external_synonym"),
+                                        mart = ensembl, useCache = F)
+gene_sets$genes_all_transcript <- gene_sets$genes_all_transcript[which(!is.na(gene_sets$genes_all_transcript$transcript_is_canonical)),]
+###########
+
+
+for(assay in c("RNA","ATAC","ADT")){
+  norm_mat <- feature_by_pat_cell_combos[[assay]]
+  if(assay == "RNA"){
+    ## transform to TPM, then median normalization
+    ## track total reads per sample - may want to apply filter prior to test
+    
+    ## get length of all canon transcripts for all genes in norm_mat, remove those with no length found
+    transcript_lengths_df <- data.frame(gene = rownames(norm_mat), transcript_length = NA)
+    temp_df <- unique(gene_sets$genes_all_transcript[,c("external_gene_name","transcript_length")])
+    transcript_lengths_df$transcript_length <- temp_df$transcript_length[match(transcript_lengths_df$gene,temp_df$external_gene_name)]
+    temp_df <- unique(gene_sets$genes_all_transcript[,c("external_synonym","transcript_length")])
+    which <- which(is.na(transcript_lengths_df$transcript_length))
+    transcript_lengths_df$transcript_length[which] <- temp_df$transcript_length[match(transcript_lengths_df$gene[which],temp_df$external_synonym)]
+    
+    which <- which(!is.na(transcript_lengths_df$transcript_length ))
+    norm_mat <- norm_mat[which,] 
+    transcript_lengths_df <- transcript_lengths_df[which,]
+    
+    
+    ## perform normalization with using acquired transcript lengths
+    
+    norm_mat ## TPM = 10e6 * (mat[el,col] / transcript_length[el]) / sum(mat[,col]/transcript_length #matched order)
+    
+    
+  } else {
+    ## ATAC and ADT normalize to reads per million
+    ## track total reads per sample - may want to apply filter prior to test
+  }
+  for(cell_type in cell_types){
+    
+  }
+}
+
 ```
