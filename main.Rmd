@@ -409,7 +409,7 @@ ucd_th1_th2_map
 
 ncol = length(ucd_th1_th2_map$sample_name)
 pats <- ucd_th1_th2_map$sample_name
-cell_types <- unique(blood_sc$predicted.celltype.l2)
+cell_types <- unique(blood_sc$predicted.celltype.l1)
 pat_cell_combos <- apply(merge(pats, cell_types),1,paste,collapse="::")
 feature_by_pat_cell_combos <- list(
   RNA = matrix(numeric(), nrow = nrow(blood_sc@assays$RNA),
@@ -434,7 +434,7 @@ for(combo in pat_cell_combos){
   pat <- str_remove(combo,"::.*")
   cell <- str_remove(combo,".*::")
   ## count cells in group (pat & cell) 
-  which <- which(blood_sc$UCD == pat & blood_sc$predicted.celltype.l2 == cell)
+  which <- which(blood_sc$UCD == pat & blood_sc$predicted.celltype.l1 == cell)
   feature_by_pat_cell_combos$cell_counts[1, combo] <- length(which)
   feature_by_pat_cell_combos$RNA[,combo] <- rowSums(blood_sc@assays$RNA[,which])
   feature_by_pat_cell_combos$ATAC[,combo] <- rowSums(blood_sc@assays$ATAC[,which])
@@ -456,15 +456,15 @@ gene_sets$genes_all_transcript <- getBM(attributes=c('ensembl_gene_id',"external
 gene_sets$genes_all_transcript <- gene_sets$genes_all_transcript[which(!is.na(gene_sets$genes_all_transcript$transcript_is_canonical)),]
 ###########
 
-
+diff_Th1_v_Th2 <- list()
 for(assay in c("RNA","ATAC","ADT")){
-  norm_mat <- feature_by_pat_cell_combos[[assay]]
+  raw_mat <- feature_by_pat_cell_combos[[assay]]
   if(assay == "RNA"){
     ## transform to TPM, then median normalization
     ## track total reads per sample - may want to apply filter prior to test
     
     ## get length of all canon transcripts for all genes in norm_mat, remove those with no length found
-    transcript_lengths_df <- data.frame(gene = rownames(norm_mat), transcript_length = NA)
+    transcript_lengths_df <- data.frame(gene = rownames(raw_mat), transcript_length = NA)
     temp_df <- unique(gene_sets$genes_all_transcript[,c("external_gene_name","transcript_length")])
     transcript_lengths_df$transcript_length <- temp_df$transcript_length[match(transcript_lengths_df$gene,temp_df$external_gene_name)]
     temp_df <- unique(gene_sets$genes_all_transcript[,c("external_synonym","transcript_length")])
@@ -472,22 +472,102 @@ for(assay in c("RNA","ATAC","ADT")){
     transcript_lengths_df$transcript_length[which] <- temp_df$transcript_length[match(transcript_lengths_df$gene[which],temp_df$external_synonym)]
     
     which <- which(!is.na(transcript_lengths_df$transcript_length ))
-    norm_mat <- norm_mat[which,] 
+    raw_mat <- raw_mat[which,] 
     transcript_lengths_df <- transcript_lengths_df[which,]
     
     
     ## perform normalization with using acquired transcript lengths
     
-    norm_mat ## TPM = 10e6 * (mat[el,col] / transcript_length[el]) / sum(mat[,col]/transcript_length #matched order)
+    ## TPM = 10e6 * (mat[el,col] / transcript_length[el]) / sum(mat[,col]/transcript_length #matched order)
     
+    raw_mat <- raw_mat[,which(colSums(raw_mat)>5e4)]
+    
+    norm_mat <- apply(raw_mat,2,function(x){ 1e6 * (x/transcript_lengths_df$transcript_length) /
+        sum(x/transcript_lengths_df$transcript_length) } ) 
+    
+    median_norm_mat <- log10(norm_mat+1)
+    median_norm_mat <- apply(median_norm_mat,2,function(x){ x / median(x[which(x > log10(10+1))]) } )
+    tpm_norm_mat <- norm_mat
+    norm_mat <- median_norm_mat
     
   } else {
+    if(assay=="ATAC"){
+      cutoff <- 1e5
+    } else { ## if assay == "ADT"
+      cutoff <- 1e4 ## check
+    }
+    raw_mat <- raw_mat[,which(colSums(raw_mat)>cutoff)] ## undecided whether and where to filter by ATAC and ADT reads
+    
+    norm_mat <- apply(raw_mat,2,function(x){ 1e6 * x / sum(x) } )
+    p80_norm_mat <- apply(raw_mat,2,function(x){ 1e6 * x / sum(x) } )
     ## ATAC and ADT normalize to reads per million
     ## track total reads per sample - may want to apply filter prior to test
   }
+  df_out  <- data.frame(matrix(nrow=nrow(norm_mat),ncol=0))
   for(cell_type in cell_types){
-    
+    which_cols_cell <- which(str_remove(colnames(norm_mat), ".*::") == cell_type)
+    which_cols_th1 <- which(is.element(str_remove(colnames(norm_mat),"::.*"), th1 ))
+    which_cols_th2 <- which(is.element(str_remove(colnames(norm_mat),"::.*"), th2 ))
+    which_cols_th1 <- intersect(which_cols_cell, which_cols_th1)
+    which_cols_th2 <- intersect(which_cols_cell, which_cols_th2)
+    pval <- apply(norm_mat,1, function(x){t.test(x[which_cols_th1], x[which_cols_th2])$p.value})
+    th1_mean <-  apply(log10(raw_mat+1),1, function(x){mean(x[which_cols_th1])})
+    th2_mean <-  apply(log10(raw_mat+1),1, function(x){mean(x[which_cols_th2])})
+    log2_th2_over_th1 <- log2(th2_mean / th1_mean)
+    temp_df <- data.frame(th1_mean=th1_mean,
+                          th2_mean=th2_mean,
+                          pval=pval,
+                          log2_th2_over_th1 = log2_th2_over_th1)
+    write.csv(temp_df, paste0(dirs$tables,assay,"__", str_replace_all(cell_type," ","-"),"__","th2_v_th1.csv"))
+    diff_Th1_v_Th2[[paste0(assay,"::", cell_type)]] <- temp_df
+    # colnames(temp_df) <- paste0(colnames(temp_df),"::",cell_type)
+    # df_out <- cbind(df_out, temp_df)
   }
+}
+
+```
+
+
+```{r, make plots of top genes by cell}
+
+for(assay in c("RNA")){
+  
+  ## get top 10 genes from each cell type
+  ### get gene set from diff_Th1_v_Th2
+  gene_sets$genes_to_plot <- c("UST-AS1","CNTF")
+  
+  ## set up dataframe
+  ### Th1 v Th2 in boxplot
+  ### Group and color by cell type
+  ### facet by Gene
+  
+  df <- data.frame(sample_id = character(),
+                   Th1_or_Th2 = character(),
+                   cell_type = character(),
+                   gene_name = character(),
+                   expression_value = numeric()
+                   )
+  
+  ## fill in df from tpm_norm_mat AND norm_mat (median norm)
+  for(gene in gene_sets$genes_to_plot){
+    
+    temp<- reshape2::melt(tpm_norm_mat[gene_sets$genes_to_plot, ,drop=F])
+    df <- data.frame(sample_id = str_remove(temp$Var2, "::.*"),
+                     Th1_or_Th2 = ucd_th1_th2_map$sample_type[match(sample_id,ucd_th1_th2_map$sample_name )],
+                     cell_type = str_remove(temp$Var2, ".*::"),
+                     gene_name = temp$Var1,
+                     expression_value = temp$value
+                     )
+    gg <- ggplot(df, aes(x=cell_type, y = log10(expression_value+1), color=Th1_or_Th2))+
+      geom_boxplot()+
+      geom_point(position=position_dodge(0.8))+
+      facet_grid(gene_name ~ .)
+  }
+  
+  ## set up table
+  
+  
+  
 }
 
 ```
