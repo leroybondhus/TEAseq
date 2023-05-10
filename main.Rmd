@@ -39,7 +39,7 @@ remotes::install_github("mojaveazure/seurat-disk")
 library(SeuratDisk)
 
 req_packages <- list(
-  standard = c("BiocManager","doParallel","ggplot2","stringr","data.table","Seurat","Signac","hdf5r","cowplot", "dplyr"),
+  standard = c("BiocManager","doParallel","ggplot2","stringr","data.table","Seurat","Signac","hdf5r","cowplot", "dplyr","ggrepel"),
   biocmanager = c("Gviz","biomaRt","EnsDb.Hsapiens.v86")
 )
 for(std_package in req_packages$standard ){
@@ -358,12 +358,23 @@ for(red in c("umap.atac", "umap.rna", "umap.adt","wnn.umap")){
   dev.off()
 }
 
+blood_sc[["old.ident"]] <- Idents(blood_sc) 
+blood_sc <- StashIdent(blood_sc, save.name = "old.ident")
+Idents(blood_sc) <- "UCD"
 
+blood_sc_subset <- subset(x = blood_sc,  idents = th1 )
+p_th1 = DimPlot(blood_sc_subset, reduction = "ref.umap", group.by = "predicted.celltype.l1", label = TRUE, label.size = 3, repel = TRUE) + NoLegend()
+blood_sc_subset <- subset(x = blood_sc,  idents = th2 )
+p_th2 = DimPlot(blood_sc_subset, reduction = "ref.umap", group.by = "predicted.celltype.l1", label = TRUE, label.size = 3, repel = TRUE) + NoLegend()
 
-
-
-
-
+png(paste0(dirs$figures,date,"_Th1_umap_ref.png"),
+    res = 220, width = 6, height = 6, units = "in")
+print(p_th1)
+dev.off()
+png(paste0(dirs$figures,date,"_Th2_umap_ref.png"),
+    res = 220, width = 6, height = 6, units = "in")
+print(p_th2)
+dev.off()
 
 
 
@@ -457,7 +468,7 @@ gene_sets$genes_all_transcript <- gene_sets$genes_all_transcript[which(!is.na(ge
 ###########
 
 diff_Th1_v_Th2 <- list()
-for(assay in c("RNA","ATAC","ADT")){
+for(assay in c("RNA")){ #,"ATAC","ADT")){
   raw_mat <- feature_by_pat_cell_combos[[assay]]
   if(assay == "RNA"){
     ## transform to TPM, then median normalization
@@ -511,9 +522,9 @@ for(assay in c("RNA","ATAC","ADT")){
     which_cols_th1 <- intersect(which_cols_cell, which_cols_th1)
     which_cols_th2 <- intersect(which_cols_cell, which_cols_th2)
     pval <- apply(norm_mat,1, function(x){t.test(x[which_cols_th1], x[which_cols_th2])$p.value})
-    th1_mean <-  apply(log10(raw_mat+1),1, function(x){mean(x[which_cols_th1])})
-    th2_mean <-  apply(log10(raw_mat+1),1, function(x){mean(x[which_cols_th2])})
-    log2_th2_over_th1 <- log2(th2_mean / th1_mean)
+    th1_mean <-  apply(log10(tpm_norm_mat+1),1, function(x){mean(x[which_cols_th1])})
+    th2_mean <-  apply(log10(tpm_norm_mat+1),1, function(x){mean(x[which_cols_th2])})
+    log2_th2_over_th1 <- log2(10^(th2_mean) / 10^(th1_mean))
     temp_df <- data.frame(th1_mean=th1_mean,
                           th2_mean=th2_mean,
                           pval=pval,
@@ -534,7 +545,18 @@ for(assay in c("RNA")){
   
   ## get top 10 genes from each cell type
   ### get gene set from diff_Th1_v_Th2
-  gene_sets$genes_to_plot <- c("UST-AS1","CNTF")
+  ### get gene signif values from diff_Th1_v_Th2 -> put in table to show next to plot
+  gene_sets$genes_to_plot <- list() 
+  for(i in 1:length(diff_Th1_v_Th2)){
+    cell_type <- str_remove(names(diff_Th1_v_Th2)[i],".*::")
+    temp_df <- diff_Th1_v_Th2[[i]]
+    temp_df <- temp_df[!is.na(temp_df$pval),]
+    temp_df <- temp_df[which(abs(temp_df$log2_th2_over_th1) > log2(1.5)), ]
+    temp_df <- temp_df[order(temp_df$pval),]
+    gene_sets$genes_to_plot[[length(gene_sets$genes_to_plot)+1]] <- rownames(temp_df)[1:5]
+    names(gene_sets$genes_to_plot)[length(gene_sets$genes_to_plot)] <- cell_type
+  }
+  
   
   ## set up dataframe
   ### Th1 v Th2 in boxplot
@@ -549,25 +571,86 @@ for(assay in c("RNA")){
                    )
   
   ## fill in df from tpm_norm_mat AND norm_mat (median norm)
-  for(gene in gene_sets$genes_to_plot){
-    
-    temp<- reshape2::melt(tpm_norm_mat[gene_sets$genes_to_plot, ,drop=F])
+  ggl <- list()
+  ggt <- list()
+  for(i in 1:length(gene_sets$genes_to_plot)){
+    genes <- gene_sets$genes_to_plot[[i]]
+    temp<- reshape2::melt(tpm_norm_mat[genes, ,drop=F])
+    #temp<- reshape2::melt(norm_mat[genes, ,drop=F])
     df <- data.frame(sample_id = str_remove(temp$Var2, "::.*"),
-                     Th1_or_Th2 = ucd_th1_th2_map$sample_type[match(sample_id,ucd_th1_th2_map$sample_name )],
+                     Th1_or_Th2 = ucd_th1_th2_map$sample_type[match(str_remove(temp$Var2, "::.*"),ucd_th1_th2_map$sample_name )],
                      cell_type = str_remove(temp$Var2, ".*::"),
                      gene_name = temp$Var1,
                      expression_value = temp$value
                      )
-    gg <- ggplot(df, aes(x=cell_type, y = log10(expression_value+1), color=Th1_or_Th2))+
+    #gg <- ggplot(df, aes(x=cell_type, y = log10(expression_value+1), fill=Th1_or_Th2))+
+    
+    gg <- ggplot(df, aes(x=cell_type, y = expression_value, fill=Th1_or_Th2))+
+      ggtitle(paste0("Top 10 most signif for: ",names(gene_sets$genes_to_plot)[i]))+
       geom_boxplot()+
       geom_point(position=position_dodge(0.8))+
-      facet_grid(gene_name ~ .)
-  }
-  
-  ## set up table
-  
+      theme( # remove the vertical grid lines
+           panel.grid.major.x = element_blank())+ 
+      facet_grid(gene_name~. , scales="free_y")
+    ggl[[length(ggl)+1]] <- gg
+    names(ggl)[length(ggl)] <- names(gene_sets$genes_to_plot)[i]
+    ## table of p.val with cell type on cols and genes on rows 
+    temp_table <- matrix(nrow=length(unique(df$gene_name)),ncol=length(unique(df$cell_type)) ,
+                         dimnames = list(levels(as.factor(df$gene_name)),levels(as.factor(df$cell_type)) ))
+    for(c_id in 1:ncol(temp_table) ){
+      
+      cell_type <- colnames(temp_table)[c_id]
+      
+      which <- which(str_remove(names(diff_Th1_v_Th2),".*::")==cell_type)
+      temp_table[,c_id] <- diff_Th1_v_Th2[[which]][rownames(temp_table),]$pval
+      
+    }
+    ggt[[length(ggt)+1]] <- temp_table
+    names(ggt)[length(ggt)] <- names(gene_sets$genes_to_plot)[i]
+    }
+  for(i in 1:length(ggl)){
+    filename <- paste0(dirs$figures,"top5RNA_",str_replace(names(ggl)[i]," ","-"),".png")
+    ggsave(filename=filename,plot=ggl[[i]], width=9,height=8, dpi=280)
+    filename <- paste0(dirs$tables,"top5RNA_",str_replace(names(ggl)[i]," ","-"),".csv")
+    write.csv(ggt[[i]],file=filename)
+  }  
   
   
 }
+  
+  ## set up table
+  
 
 ```
+
+
+```{r volcano plots}
+ggl <- list()
+for(i in 1:length(diff_Th1_v_Th2)){
+  temp_df <- diff_Th1_v_Th2[[i]]
+  temp_df$gene_name <- rownames(temp_df)
+  which <- which(abs(temp_df$log2_th2_over_th1) > log2(1.5) & temp_df$pval < 0.01 )
+  title <- paste0("Th2 v Th1::",names(diff_Th1_v_Th2)[i])
+  gg <- ggplot(temp_df, aes(x=log2_th2_over_th1, y=-log10(pval) )  )+
+    ggtitle(title)+
+    geom_point(alpha=0.3)+
+    geom_vline(xintercept =  c(-log2(1.5),log2(1.5)), linetype="dashed", color="grey30" )+
+    #geom_vline(xintercept = log2(1.5))+
+    geom_hline(yintercept = -log10(0.01), linetype="dashed", color="grey30")+
+    geom_point(data = temp_df[which,], aes(color="red"))+
+    #geom_text(data = temp_df[which,], aes(label=gene_name))+
+    geom_label_repel(data = temp_df[which,], aes(label=gene_name), size=3,
+                     box.padding = 0.1,
+                     point.padding=0.2,
+                     segment.color="grey50",
+                     max.overlaps = 30)+
+    theme_bw()
+  temp_assay <- str_remove(names(diff_Th1_v_Th2)[i], "::.*")
+  temp_cell <- str_remove(names(diff_Th1_v_Th2)[i], ".*::")
+  temp_cell <- str_replace(temp_cell, " ", "-")
+  filename = paste0(dirs$figures,"VolcanoPlot_Th2_v_Th1_",temp_assay,"_",temp_cell,".png")
+  ggsave(filename=filename, plot=gg, device="png", width=10, height=8, dpi = 230,units="in")
+}
+
+```
+
