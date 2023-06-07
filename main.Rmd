@@ -35,6 +35,7 @@ date <- format(Sys.time(), "%y%m%d")
 
 
 ```{r load packages, echo=FALSE, results='hide'}
+install.packages("remotes")
 remotes::install_github("mojaveazure/seurat-disk")
 library(SeuratDisk)
 
@@ -536,6 +537,144 @@ for(assay in c("RNA")){ #,"ATAC","ADT")){
   }
 }
 
+
+
+```
+
+
+```{r estimate FDR via permutation}
+diff_Th1_v_Th2_simul <- list()
+for(assay in c("RNA")){ #,"ATAC","ADT")){
+  raw_mat <- feature_by_pat_cell_combos[[assay]]
+  if(assay == "RNA"){
+    ## transform to TPM, then median normalization
+    ## track total reads per sample - may want to apply filter prior to test
+    
+    ## get length of all canon transcripts for all genes in norm_mat, remove those with no length found
+    transcript_lengths_df <- data.frame(gene = rownames(raw_mat), transcript_length = NA)
+    temp_df <- unique(gene_sets$genes_all_transcript[,c("external_gene_name","transcript_length")])
+    transcript_lengths_df$transcript_length <- temp_df$transcript_length[match(transcript_lengths_df$gene,temp_df$external_gene_name)]
+    temp_df <- unique(gene_sets$genes_all_transcript[,c("external_synonym","transcript_length")])
+    which <- which(is.na(transcript_lengths_df$transcript_length))
+    transcript_lengths_df$transcript_length[which] <- temp_df$transcript_length[match(transcript_lengths_df$gene[which],temp_df$external_synonym)]
+    
+    which <- which(!is.na(transcript_lengths_df$transcript_length ))
+    raw_mat <- raw_mat[which,] 
+    transcript_lengths_df <- transcript_lengths_df[which,]
+    
+    
+    ## perform normalization with using acquired transcript lengths
+    
+    ## TPM = 10e6 * (mat[el,col] / transcript_length[el]) / sum(mat[,col]/transcript_length #matched order)
+    
+    raw_mat <- raw_mat[,which(colSums(raw_mat)>5e4)]
+    
+    norm_mat <- apply(raw_mat,2,function(x){ 1e6 * (x/transcript_lengths_df$transcript_length) /
+        sum(x/transcript_lengths_df$transcript_length) } ) 
+    
+    median_norm_mat <- log10(norm_mat+1)
+    median_norm_mat <- apply(median_norm_mat,2,function(x){ x / median(x[which(x > log10(10+1))]) } )
+    tpm_norm_mat <- norm_mat
+    norm_mat <- median_norm_mat
+    
+  } else {
+    if(assay=="ATAC"){
+      cutoff <- 1e5
+    } else { ## if assay == "ADT"
+      cutoff <- 1e4 ## check
+    }
+    raw_mat <- raw_mat[,which(colSums(raw_mat)>cutoff)] ## undecided whether and where to filter by ATAC and ADT reads
+    
+    norm_mat <- apply(raw_mat,2,function(x){ 1e6 * x / sum(x) } )
+    p80_norm_mat <- apply(raw_mat,2,function(x){ 1e6 * x / sum(x) } )
+    ## ATAC and ADT normalize to reads per million
+    ## track total reads per sample - may want to apply filter prior to test
+  }
+  df_out  <- data.frame(matrix(nrow=nrow(norm_mat),ncol=0))
+  for(cell_type in cell_types){
+    nperms = 10
+    for(perm in 1:nperms){
+      which_cols_cell <- which(str_remove(colnames(norm_mat), ".*::") == cell_type)
+      g1 <- c(sample(th1,4),sample(th2,4))
+      g2 <- setdiff(c(th1,th2),g1)
+      which_cols_g1 <- which(is.element(str_remove(colnames(norm_mat),"::.*"), g1 ))
+      which_cols_g2 <- which(is.element(str_remove(colnames(norm_mat),"::.*"), g2 ))
+      which_cols_g1 <- intersect(which_cols_cell, which_cols_g1)
+      which_cols_g2 <- intersect(which_cols_cell, which_cols_g2)
+      pval <- apply(norm_mat,1, function(x){t.test(x[which_cols_g1], x[which_cols_g2])$p.value})
+      g1_mean <-  apply(log10(tpm_norm_mat+1),1, function(x){mean(x[which_cols_g1])})
+      g2_mean <-  apply(log10(tpm_norm_mat+1),1, function(x){mean(x[which_cols_g2])})
+      log2_g2_over_g1 <- log2(10^(g2_mean) / 10^(g1_mean))
+      temp_df <- data.frame(g1_mean=g1_mean,
+                            g2_mean=g2_mean,
+                            pval=pval,
+                            log2_g2_over_g1 = log2_g2_over_g1,
+                            perm=perm)
+      #write.csv(temp_df, paste0(dirs$tables,assay,"__", str_replace_all(cell_type," ","-"),"__","g2_v_g1.csv"))
+      diff_Th1_v_Th2_simul[[paste0(assay,"::", cell_type)]] <- rbind(diff_Th1_v_Th2_simul[[paste0(assay,"::", cell_type)]],
+                                                                     temp_df)
+      # colnames(temp_df) <- paste0(colnames(temp_df),"::",cell_type)
+      # df_out <- cbind(df_out, temp_df)
+      
+    }
+  }
+}
+
+diff_Th1_v_Th2_fdr_tables <- list()
+for(i in 1:length(diff_Th1_v_Th2_simul)){
+  assay <- str_remove(names(diff_Th1_v_Th2_simul)[i], "::.*")
+  cell_type <- str_remove(names(diff_Th1_v_Th2_simul)[i], ".*::")
+  
+  signif_cuts <- seq(0,10,by=0.1)
+  signif_df <- data.frame(signif_cuts=signif_cuts)
+  
+  temp_df <- diff_Th1_v_Th2[[grep(paste0("^",assay,".*",cell_type,"$"),names(diff_Th1_v_Th2))]]
+  next_signif_df_col <- data.frame(V1=numeric(length=nrow(signif_df)))
+  for(sigcut_row in 1:nrow(signif_df)){
+      next_signif_df_col$V1[sigcut_row] <- sum(-log10(temp_df$pval) >= signif_df$signif_cuts[sigcut_row], na.rm = T)
+  }
+  colnames(next_signif_df_col) <- "real_partition"
+  signif_df <- cbind(signif_df, next_signif_df_col)
+  
+  for(perm in unique(diff_Th1_v_Th2_simul[[i]]$perm)){
+    temp_df <-diff_Th1_v_Th2_simul[[i]][which(diff_Th1_v_Th2_simul[[i]]$perm==perm),]
+    next_signif_df_col <- data.frame(V1=numeric(length=nrow(signif_df)))
+    for(sigcut_row in 1:nrow(signif_df)){
+      next_signif_df_col$V1[sigcut_row] <- sum(-log10(temp_df$pval) >= signif_df$signif_cuts[sigcut_row], na.rm = T)
+    }
+    colnames(next_signif_df_col) <- paste0("perm:",perm)
+    signif_df <- cbind(signif_df, next_signif_df_col)
+  }
+  
+  signif_df$perm_medians <- apply(signif_df[,grep("perm:",colnames(signif_df))], 1, median)
+  signif_df$fdr <- signif_df$perm_medians / signif_df$real_partition
+  diff_Th1_v_Th2_fdr_tables[[names(diff_Th1_v_Th2_simul)[i]]] <- signif_df
+  
+}
+save.image()
+
+library(openxlsx)
+wb_file <- paste0(dirs$fdr_tables,"fdr_RNA_by_cell_type.xlsx")
+for(i in 1:length(diff_Th1_v_Th2_fdr_tables)){
+  dirs$fdr_tables <- paste0(dirs$tables,date,"_fdr_table_Th1_v_Th2/")  
+  if(!dir.exists(dirs$fdr_tables)){dir.create(dirs$fdr_tables)}
+  filename <- paste0(dirs$fdr_tables, str_replace_all(names(diff_Th1_v_Th2_fdr_tables)[i],"[: ]","_"),".csv")
+  temp_df <- diff_Th1_v_Th2_fdr_tables[[i]][,c("signif_cuts","real_partition","perm_medians","fdr",
+                colnames(diff_Th1_v_Th2_fdr_tables[[i]])[grep("perm:",colnames(diff_Th1_v_Th2_fdr_tables[[i]]))] )]
+  write.csv(temp_df, file=filename)
+  sheet_name <- str_replace_all(names(diff_Th1_v_Th2_fdr_tables)[i],"[: ]","_")
+  if(!file.exists(wb_file)){
+    openxlsx::write.xlsx(temp_df, file = wb_file, 
+                       sheetName=sheet_name)
+  } else{
+    wb <- loadWorkbook(wb_file)
+    addWorksheet(wb,str_replace_all(names(diff_Th1_v_Th2_fdr_tables)[i],"[: ]","_"))
+    writeData(wb,sheet_name,temp_df)
+    saveWorkbook(wb,wb_file,overwrite = TRUE)
+  }
+  
+  
+}
 ```
 
 
@@ -654,3 +793,31 @@ for(i in 1:length(diff_Th1_v_Th2)){
 
 ```
 
+
+```{r, GEX+ATAC+ADT WNN}
+
+### Teaseq paper :: WNN tri-modal
+### RNA = 1:30 PCA dims, ATAC = 1:30 LSI dims, ADT = all normalized and scaled ADT features passing QC 1:38
+
+# alpha : modality index
+
+temp_modalities <- list(
+  RNA_pca = blood_sc@reductions$pca,
+  ATAC_lsi = blood_sc@reductions$lsi,
+  ADT = blood_sc@reductions$apca
+)
+
+# x, x_hat actual and predidcted values of low-dimensional representation in each modality
+epsilon <- 1e-4
+S_alpha_i = theta_alpha(x_i, x_hat_i, knn_alpha) / (max(theta_alpha(x_i, x_hat_i, knn_beta))+epsilon)
+
+w_alpha_i = exp(S_alpha_i)/sum(exp(S_beta_i))
+
+### construct weighted pairwise cell similarity
+theta_weighted_i_j = sum(w_alpha_i * theta_alpha(x_i, x_j))
+
+
+### 
+
+
+```
