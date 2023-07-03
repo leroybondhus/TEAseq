@@ -13,7 +13,8 @@ knitr::opts_chunk$set(echo = TRUE)
 dirs <- list(
   results = "./results/",
   figures = "./results/figures/",
-  tables = "./results/tables/"
+  tables = "./results/tables/",
+  qc_results = "./results/qc/"
 )
 for(dir in dirs){
   if(!dir.exists(dir)){dir.create(dir)}
@@ -53,20 +54,10 @@ rm(req_packages)
 
 ```
 
-```{r}
-## import + load h5 reference
-if(!file.exists(files$pbmc_reference)){
-  download.file("https://atlas.fredhutch.org/data/nygc/multimodal/pbmc_multimodal.h5seurat",
-                files$pbmc_reference)  
-}
 
-reference <- LoadH5Seurat(files$pbmc_reference)
-```
 
 ```{r, rna + atac qc}
 gex_atac <- Read10X_h5(files$GEX_ATAC_out)
-
-
 
 rna_counts <- gex_atac$`Gene Expression`
 atac_counts <- gex_atac$Peaks
@@ -90,44 +81,8 @@ VlnPlot(blood_sc, features = c("nCount_ATAC", "nCount_RNA","percent.mt"), ncol =
   log = TRUE, pt.size = 0) + NoLegend()
 
 
-blood_sc <- subset(
-  x = blood_sc,
-  subset = nCount_ATAC < 1e5 &
-    nCount_ATAC > 1e3 &
-    nCount_RNA < 25000 &
-    nCount_RNA > 500 &
-    percent.mt < 20
-)
-```
-
-
-```{r}
-DefaultAssay(blood_sc) <- "RNA"
-blood_sc <- SCTransform(blood_sc, verbose = FALSE) %>% RunPCA() %>% RunUMAP(dims = 1:50, reduction.name = 'umap.rna', reduction.key = 'rnaUMAP_')
-
-DefaultAssay(blood_sc) <- "ATAC"
-blood_sc <- RunTFIDF(blood_sc)
-blood_sc <- FindTopFeatures(blood_sc, min.cutoff = 'q0')
-blood_sc <- RunSVD(blood_sc)
-blood_sc <- RunUMAP(blood_sc, reduction = 'lsi', dims = 2:50, reduction.name = "umap.atac", reduction.key = "atacUMAP_")
-
-
 
 ```
-
-
-
-```{r}
-# 
-# p1 <- DimPlot(blood_sc, reduction = "umap.rna") + #, group.by = "celltype", label = TRUE, label.size = 2.5, repel = TRUE) + 
-#   ggtitle("RNA")
-# p2 <- DimPlot(blood_sc, reduction = "umap.atac") + #, group.by = "celltype", label = TRUE, label.size = 2.5, repel = TRUE) + 
-#   ggtitle("ATAC")
-# p3 <- DimPlot(blood_sc, reduction = "wnn.umap") + #, group.by = "celltype", label = TRUE, label.size = 2.5, repel = TRUE) + 
-#   ggtitle("WNN")
-# p1 + p2 + p3 & theme(plot.title = element_text(hjust = 0.5))  & NoLegend()
-```
-
 
 ```{r, hto + adt qc}
 ggl <- list()
@@ -273,11 +228,25 @@ for(i in 1:length(ggl)){
 
 
 
+
+```{r}
+# 
+# p1 <- DimPlot(blood_sc, reduction = "umap.rna") + #, group.by = "celltype", label = TRUE, label.size = 2.5, repel = TRUE) + 
+#   ggtitle("RNA")
+# p2 <- DimPlot(blood_sc, reduction = "umap.atac") + #, group.by = "celltype", label = TRUE, label.size = 2.5, repel = TRUE) + 
+#   ggtitle("ATAC")
+# p3 <- DimPlot(blood_sc, reduction = "wnn.umap") + #, group.by = "celltype", label = TRUE, label.size = 2.5, repel = TRUE) + 
+#   ggtitle("WNN")
+# p1 + p2 + p3 & theme(plot.title = element_text(hjust = 0.5))  & NoLegend()
+```
+
+
+
+
 ```{r, add hto + adt to rna + atac}
 
 
 hto <-hto_adt_subset_all[,grepl("UCD|VFI|KCMS|UCLA",colnames(hto_adt_subset_all))]
-which(is.na(hto))
 adt <- hto_adt_subset_all[,!grepl("UCD|VFI|KCMS|UCLA|class",colnames(hto_adt_subset_all))]
 
 missing_cells <- Cells(blood_sc)[which(!is.element(Cells(blood_sc), rownames(adt) ))]
@@ -288,9 +257,114 @@ adt <- adt[Cells(blood_sc),]
 adt <- as.matrix(adt)
 adt[which(is.na(adt))] <- 0
 adt <- as.data.frame(adt)
-adt_assay <- CreateAssayObject(t(adt))
 
-blood_sc[["ADT"]] <- adt_assay
+
+blood_sc[["ADT"]] <- CreateAssayObject(t(adt))
+
+VlnPlot(blood_sc, features = c("nCount_ADT"), ncol = 1,log = TRUE, pt.size = 0) + NoLegend()
+
+
+```
+
+
+```{r, pre-filter qc plots}
+## Subset on ADT count + plot adt count stuff...
+
+cutoffs <- list(RNA_count_cutoff_lb = 500,
+                RNA_count_cutoff_ub = 25000,
+                ATAC_count_cutoff_lb = 1e3,
+                ATAC_count_cutoff_ub = 1e5,
+                ADT_count_cutoff_lb = 250,
+                ADT_count_cutoff_ub = 1e4,
+                mito_percent_cutoff = 20
+                )
+
+png(paste0(dirs$qc_results,"prefilter_RNA_dist_all_cells.png"), units = "in", width = 7, height=7, res = 320)
+lb_removed <- sum(blood_sc$nCount_RNA < cutoffs$RNA_count_cutoff_lb)
+ub_removed <- sum(blood_sc$nCount_RNA > cutoffs$RNA_count_cutoff_ub)
+par(mar = c(5.1,4.1,6.1,2.1))
+hist(log10(blood_sc$nCount_RNA),breaks=100, xlab = "log10(RNA reads)",
+     main = paste0("prefilter RNA distribution across all ", length(Cells(blood_sc))," cells\n",
+                   sum(blood_sc$nCount_RNA==0)," zero count cells\n ",
+                   lb_removed," reads < ",cutoffs$RNA_count_cutoff_lb," read cutoff\n",
+                   ub_removed," reads > ",cutoffs$RNA_count_cutoff_ub," read cutoff "))
+abline(v=c(log10(cutoffs$RNA_count_cutoff_lb),log10(cutoffs$RNA_count_cutoff_ub)), lty="dashed")
+dev.off()
+
+png(paste0(dirs$qc_results,"prefilter_ATAC_dist_all_cells.png"), units = "in", width = 7, height=7, res = 320)
+lb_removed <- sum(blood_sc$nCount_ATAC < cutoffs$ATAC_count_cutoff_lb)
+ub_removed <- sum(blood_sc$nCount_ATAC > cutoffs$ATAC_count_cutoff_ub)
+par(mar = c(5.1,4.1,6.1,2.1))
+hist(log10(blood_sc$nCount_ATAC),breaks=100, xlab = "log10(ATAC reads)",
+     main = paste0("prefilter ATAC distribution across all ", length(Cells(blood_sc))," cells\n",
+                   sum(blood_sc$nCount_ATAC==0)," zero count cells\n ",
+                   lb_removed," reads < ",cutoffs$ATAC_count_cutoff_lb," read cutoff\n",
+                   ub_removed," reads > ",cutoffs$ATAC_count_cutoff_ub," read cutoff "))
+abline(v=c(log10(cutoffs$ATAC_count_cutoff_lb),log10(cutoffs$ATAC_count_cutoff_ub)), lty="dashed")
+dev.off()
+
+
+png(paste0(dirs$qc_results,"prefilter_ADT_dist_all_cells.png"), units = "in", width = 7, height=7, res = 320)
+lb_removed <- sum(blood_sc$nCount_ADT < cutoffs$ADT_count_cutoff_lb)
+ub_removed <- sum(blood_sc$nCount_ADT > cutoffs$ADT_count_cutoff_ub)
+par(mar = c(5.1,4.1,6.1,2.1))
+hist(log10(blood_sc$nCount_ADT),breaks=100, xlab = "log10(ADT reads)",
+     main = paste0("prefilter ADT distribution across all ", length(Cells(blood_sc))," cells\n",
+                   sum(blood_sc$nCount_ADT==0)," zero count cells\n ",
+                   lb_removed," reads < ",cutoffs$ADT_count_cutoff_lb," read cutoff\n",
+                   ub_removed," reads > ",cutoffs$ADT_count_cutoff_ub," read cutoff "))
+abline(v=c(log10(cutoffs$ADT_count_cutoff_lb),log10(cutoffs$ADT_count_cutoff_ub)), lty="dashed")
+dev.off()
+
+png(paste0(dirs$qc_results,"prefilter_percent_mito_all_cells.png"), units = "in", width = 7, height=7, res = 320)
+ub_removed <- sum(blood_sc$percent.mt > cutoffs$mito_percent_cutoff)
+par(mar = c(5.1,4.1,4.1,2.1))
+hist(blood_sc$percent.mt, breaks=100, xlab="percent mitochondrial RNA reads",
+     main = paste0("prefilter mitochondrial read distribution across all ", length(Cells(blood_sc))," cells\n",
+                   ub_removed," reads > ",cutoffs$mito_percent_cutoff," read cutoff "))
+abline(v=cutoffs$mito_percent_cutoff, lty="dashed")
+dev.off()
+
+
+png(paste0(dirs$qc_results,"prefilter_ADT_heatmap_rand_3k_cell_subset.png"), units = "in", width = 7, height=7, res = 320)
+temp_mat <- as.matrix(t(blood_sc@assays$ADT@counts))
+heatmap(log10(temp_mat[which(rowSums(temp_mat)>0),][1:3000,]+1), scale = "none", margin=c(7,4))
+rm(temp_mat)
+dev.off()
+```
+
+```{r}
+export_tables <- list()
+export_tables$pre_post_filter_cell_counts <- data.frame(pre=length(Cells(blood_sc)), post=-1)
+blood_sc <- subset(
+  x = blood_sc,
+  subset = 
+    nCount_RNA > cutoffs$RNA_count_cutoff_lb &
+    nCount_RNA < cutoffs$RNA_count_cutoff_ub &
+    nCount_ATAC > cutoffs$ATAC_count_cutoff_lb &
+    nCount_ATAC < cutoffs$ATAC_count_cutoff_ub &
+    nCount_ADT > cutoffs$ADT_count_cutoff_lb &
+    nCount_ADT < cutoffs$ADT_count_cutoff_ub &
+    percent.mt < 20
+)
+export_tables$pre_post_filter_cell_counts$post <- length(Cells(blood_sc))
+write.csv(export_tables$pre_post_filter_cell_counts,
+          file=paste0(dirs$qc_results,"pre_post_filter_cell_count.csv"), row.names = F)
+```
+
+
+```{r}
+
+DefaultAssay(blood_sc) <- "RNA"
+blood_sc <- SCTransform(blood_sc, verbose = FALSE) %>% RunPCA() %>% RunUMAP(dims = 1:50, reduction.name = 'umap.rna', reduction.key = 'rnaUMAP_')
+
+DefaultAssay(blood_sc) <- "ATAC"
+blood_sc <- RunTFIDF(blood_sc)
+blood_sc <- FindTopFeatures(blood_sc, min.cutoff = 'q0')
+blood_sc <- RunSVD(blood_sc)
+blood_sc <- RunUMAP(blood_sc, reduction = 'lsi', dims = 2:50, reduction.name = "umap.atac", reduction.key = "atacUMAP_")
+
+
 DefaultAssay(blood_sc) <- "ADT"
 VariableFeatures(blood_sc) <- rownames(blood_sc[["ADT"]])
 blood_sc <- NormalizeData(blood_sc, normalization.method = 'CLR', margin = 2) %>% 
@@ -300,9 +374,18 @@ blood_sc <- RunUMAP(blood_sc, reduction = 'apca', dims = 1:29, assay = 'ADT',
               reduction.name = 'umap.adt', reduction.key = 'adtUMAP_')
 
 
-blood_sc <- FindMultiModalNeighbors(blood_sc, reduction.list = list("pca","lsi"), dims.list = list(1:50,2:50))
+
+
+```
+
+
+```{r}
+blood_sc <- FindMultiModalNeighbors(blood_sc, reduction.list = list("pca","lsi", "apca"), dims.list = list(1:50,2:50,1:29))
+
+#blood_sc <- FindMultiModalNeighbors(blood_sc, reduction.list = list("pca","lsi"), dims.list = list(1:50,2:50))
 blood_sc <- RunUMAP(blood_sc, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_")
 blood_sc <- FindClusters(blood_sc, graph.name = "wsnn", algorithm = 3, verbose = FALSE)
+#save.image()
 # 
 
 # blood_sc <- FindMultiModalNeighbors(blood_sc, reduction.list = list("pca","lsi", "apca"), dims.list = list(1:50,2:50,1:29))
@@ -310,9 +393,19 @@ blood_sc <- FindClusters(blood_sc, graph.name = "wsnn", algorithm = 3, verbose =
 # blood_sc <- RunUMAP(blood_sc, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_")
 # blood_sc <- FindClusters(blood_sc, graph.name = "wsnn", algorithm = 3, verbose = FALSE)
 
+```
 
+```{r}
+## import + load h5 reference
+if(!file.exists(files$pbmc_reference)){
+  download.file("https://atlas.fredhutch.org/data/nygc/multimodal/pbmc_multimodal.h5seurat",
+                files$pbmc_reference)  
+}
 
+reference <- LoadH5Seurat(files$pbmc_reference)
+```
 
+```{r}
 blood_sc <- SCTransform(blood_sc)
 anchors <- FindTransferAnchors(
   reference = reference,
@@ -347,9 +440,10 @@ dev.off()
 
 p3 = DimPlot(blood_sc, reduction = "umap.atac") + NoLegend()
 p4 = DimPlot(blood_sc, reduction = "umap.rna") + NoLegend()
-p5 = DimPlot(blood_sc, reduction = "wnn.umap") + NoLegend()
-p6 = DimPlot(blood_sc, reduction = "umap.adt") + NoLegend()
+p5 = DimPlot(blood_sc, reduction = "umap.adt") + NoLegend()
+p6 = DimPlot(blood_sc, reduction = "wnn.umap") + NoLegend()
 
+p3 + p4 + p5 + p6
 
 for(red in c("umap.atac", "umap.rna", "umap.adt","wnn.umap")){
   png(paste0(dirs$figures,date,"_",red,".png"),
@@ -358,35 +452,12 @@ for(red in c("umap.atac", "umap.rna", "umap.adt","wnn.umap")){
   print(p)
   dev.off()
 }
-
-blood_sc[["old.ident"]] <- Idents(blood_sc) 
-blood_sc <- StashIdent(blood_sc, save.name = "old.ident")
-Idents(blood_sc) <- "UCD"
-
-blood_sc_subset <- subset(x = blood_sc,  idents = th1 )
-p_th1 = DimPlot(blood_sc_subset, reduction = "ref.umap", group.by = "predicted.celltype.l1", label = TRUE, label.size = 3, repel = TRUE) + NoLegend()
-blood_sc_subset <- subset(x = blood_sc,  idents = th2 )
-p_th2 = DimPlot(blood_sc_subset, reduction = "ref.umap", group.by = "predicted.celltype.l1", label = TRUE, label.size = 3, repel = TRUE) + NoLegend()
-
-png(paste0(dirs$figures,date,"_Th1_umap_ref.png"),
-    res = 220, width = 6, height = 6, units = "in")
-print(p_th1)
-dev.off()
-png(paste0(dirs$figures,date,"_Th2_umap_ref.png"),
-    res = 220, width = 6, height = 6, units = "in")
-print(p_th2)
-dev.off()
-
-
-
-
-VlnPlot(blood_sc, features = "ATAC.weight", group.by = 'predicted.celltype.l2', sort = TRUE, pt.size = 0.01) +
-  NoLegend()
-
+rm(p,p1,p2,p3,p4,p5,p6)
+save.image()
 ```
 
 ```{r}
-save.image()
+#save.image()
 ```
 
 
@@ -395,14 +466,15 @@ save.image()
 ## differential analysis by cell type by patient Th+ Th- 
 ## Th2 : UCD5, VFI23, KCMS135, KCMS177, UCLA357, UCLA305, UCLA324, KCMS238
 ## Th1 : all others
-
+hto_adt_subset_all <- hto_adt_subset_all[which(is.element(rownames(hto_adt_subset_all),
+                                                          Cells(blood_sc))),]
  c(hto_adt_subset_all$class) 
 temp_hto <- hto_adt_subset_all$class
 names(temp_hto) <- rownames(hto_adt_subset_all)
 
 not_in_temp_hto <- Cells(blood_sc)[which(!is.element(Cells(blood_sc), names(temp_hto)))]
 temp_hto <- c(temp_hto, rep(NA,length(not_in_temp_hto) ))
-names(temp_hto)[length(temp_hto)] <- not_in_temp_hto 
+if(length(not_in_temp_hto) > 0){ names(temp_hto)[length(temp_hto)] <- not_in_temp_hto} 
 temp_hto <- temp_hto[match(names(temp_hto),Cells(blood_sc) )]
 
 all(names(temp_hto) == Cells(blood_sc) )
@@ -469,7 +541,7 @@ gene_sets$genes_all_transcript <- gene_sets$genes_all_transcript[which(!is.na(ge
 ###########
 
 diff_Th1_v_Th2 <- list()
-for(assay in c("RNA")){ #,"ATAC","ADT")){
+for(assay in c("RNA","ATAC")){ #,"ATAC","ADT")){
   raw_mat <- feature_by_pat_cell_combos[[assay]]
   if(assay == "RNA"){
     ## transform to TPM, then median normalization
@@ -506,12 +578,12 @@ for(assay in c("RNA")){ #,"ATAC","ADT")){
     if(assay=="ATAC"){
       cutoff <- 1e5
     } else { ## if assay == "ADT"
-      cutoff <- 1e4 ## check
+      cutoff <- 1e3 ## check
     }
     raw_mat <- raw_mat[,which(colSums(raw_mat)>cutoff)] ## undecided whether and where to filter by ATAC and ADT reads
     
     norm_mat <- apply(raw_mat,2,function(x){ 1e6 * x / sum(x) } )
-    p80_norm_mat <- apply(raw_mat,2,function(x){ 1e6 * x / sum(x) } )
+    # p80_norm_mat <- apply(raw_mat,2,function(x){ 1e6 * x / sum(x) } )
     ## ATAC and ADT normalize to reads per million
     ## track total reads per sample - may want to apply filter prior to test
   }
@@ -523,8 +595,8 @@ for(assay in c("RNA")){ #,"ATAC","ADT")){
     which_cols_th1 <- intersect(which_cols_cell, which_cols_th1)
     which_cols_th2 <- intersect(which_cols_cell, which_cols_th2)
     pval <- apply(norm_mat,1, function(x){t.test(x[which_cols_th1], x[which_cols_th2])$p.value})
-    th1_mean <-  apply(log10(tpm_norm_mat+1),1, function(x){mean(x[which_cols_th1])})
-    th2_mean <-  apply(log10(tpm_norm_mat+1),1, function(x){mean(x[which_cols_th2])})
+    th1_mean <-  apply(log10(norm_mat+1),1, function(x){mean(x[which_cols_th1])})
+    th2_mean <-  apply(log10(norm_mat+1),1, function(x){mean(x[which_cols_th2])})
     log2_th2_over_th1 <- log2(10^(th2_mean) / 10^(th1_mean))
     temp_df <- data.frame(th1_mean=th1_mean,
                           th2_mean=th2_mean,
@@ -541,10 +613,49 @@ for(assay in c("RNA")){ #,"ATAC","ADT")){
 
 ```
 
+```{r}
+
+blood_sc[["old.ident"]] <- Idents(blood_sc) 
+blood_sc <- StashIdent(blood_sc, save.name = "old.ident")
+Idents(blood_sc) <- "UCD"
+
+blood_sc_subset <- subset(x = blood_sc,  idents = th1 )
+p_th1 = DimPlot(blood_sc_subset, reduction = "ref.umap", group.by = "predicted.celltype.l1", label = TRUE, label.size = 3, repel = TRUE) + NoLegend()
+blood_sc_subset <- subset(x = blood_sc,  idents = th2 )
+p_th2 = DimPlot(blood_sc_subset, reduction = "ref.umap", group.by = "predicted.celltype.l1", label = TRUE, label.size = 3, repel = TRUE) + NoLegend()
+rm(blood_sc_subset)
+
+png(paste0(dirs$figures,date,"_Th1_umap_ref.png"),
+    res = 220, width = 6, height = 6, units = "in")
+print(p_th1)
+dev.off()
+png(paste0(dirs$figures,date,"_Th2_umap_ref.png"),
+    res = 220, width = 6, height = 6, units = "in")
+print(p_th2)
+dev.off()
+
+
+
+VlnPlot(blood_sc, features = "SCT.weight", group.by = 'predicted.celltype.l1', sort = F, pt.size = 0.01) +
+  NoLegend()
+VlnPlot(blood_sc, features = "ATAC.weight", group.by = 'predicted.celltype.l1', sort = F, pt.size = 0.01) +
+  NoLegend()
+VlnPlot(blood_sc, features = "ADT.weight", group.by = 'predicted.celltype.l1', sort = F, pt.size = 0.01) +
+  NoLegend()
+
+
+VlnPlot(blood_sc, features = "SCT.weight", group.by = 'predicted.celltype.l2', sort = F, pt.size = 0.01) +
+  NoLegend()
+VlnPlot(blood_sc, features = "ATAC.weight", group.by = 'predicted.celltype.l2', sort = F, pt.size = 0.01) +
+  NoLegend()
+VlnPlot(blood_sc, features = "ADT.weight", group.by = 'predicted.celltype.l2', sort = F, pt.size = 0.01) +
+  NoLegend()
+
+```
 
 ```{r estimate FDR via permutation}
 diff_Th1_v_Th2_simul <- list()
-for(assay in c("RNA")){ #,"ATAC","ADT")){
+for(assay in c("RNA","ATAC")){ #,"ADT")){
   raw_mat <- feature_by_pat_cell_combos[[assay]]
   if(assay == "RNA"){
     ## transform to TPM, then median normalization
@@ -578,7 +689,7 @@ for(assay in c("RNA")){ #,"ATAC","ADT")){
     norm_mat <- median_norm_mat
     
   } else {
-    if(assay=="ATAC"){
+    if(assay == "ATAC"){
       cutoff <- 1e5
     } else { ## if assay == "ADT"
       cutoff <- 1e4 ## check
@@ -586,7 +697,7 @@ for(assay in c("RNA")){ #,"ATAC","ADT")){
     raw_mat <- raw_mat[,which(colSums(raw_mat)>cutoff)] ## undecided whether and where to filter by ATAC and ADT reads
     
     norm_mat <- apply(raw_mat,2,function(x){ 1e6 * x / sum(x) } )
-    p80_norm_mat <- apply(raw_mat,2,function(x){ 1e6 * x / sum(x) } )
+    # p80_norm_mat <- apply(raw_mat,2,function(x){ 1e6 * x / sum(x) } )
     ## ATAC and ADT normalize to reads per million
     ## track total reads per sample - may want to apply filter prior to test
   }
@@ -602,8 +713,8 @@ for(assay in c("RNA")){ #,"ATAC","ADT")){
       which_cols_g1 <- intersect(which_cols_cell, which_cols_g1)
       which_cols_g2 <- intersect(which_cols_cell, which_cols_g2)
       pval <- apply(norm_mat,1, function(x){t.test(x[which_cols_g1], x[which_cols_g2])$p.value})
-      g1_mean <-  apply(log10(tpm_norm_mat+1),1, function(x){mean(x[which_cols_g1])})
-      g2_mean <-  apply(log10(tpm_norm_mat+1),1, function(x){mean(x[which_cols_g2])})
+      g1_mean <-  apply(log10(norm_mat+1),1, function(x){mean(x[which_cols_g1])})
+      g2_mean <-  apply(log10(norm_mat+1),1, function(x){mean(x[which_cols_g2])})
       log2_g2_over_g1 <- log2(10^(g2_mean) / 10^(g1_mean))
       temp_df <- data.frame(g1_mean=g1_mean,
                             g2_mean=g2_mean,
@@ -651,10 +762,10 @@ for(i in 1:length(diff_Th1_v_Th2_simul)){
   diff_Th1_v_Th2_fdr_tables[[names(diff_Th1_v_Th2_simul)[i]]] <- signif_df
   
 }
-save.image()
+# save.image()
 
 library(openxlsx)
-wb_file <- paste0(dirs$fdr_tables,"fdr_RNA_by_cell_type.xlsx")
+wb_file <- paste0(dirs$fdr_tables,"fdr_RNA_by_cell_type_v2.xlsx")
 for(i in 1:length(diff_Th1_v_Th2_fdr_tables)){
   dirs$fdr_tables <- paste0(dirs$tables,date,"_fdr_table_Th1_v_Th2/")  
   if(!dir.exists(dirs$fdr_tables)){dir.create(dirs$fdr_tables)}
@@ -821,3 +932,11 @@ theta_weighted_i_j = sum(w_alpha_i * theta_alpha(x_i, x_j))
 
 
 ```
+
+
+```{r, look at ATAC + ADT diff between Th1 and Th2, make heatmaps of top diff, perform PCA... etc etc}
+
+
+
+```
+
