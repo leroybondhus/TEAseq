@@ -222,7 +222,7 @@ for(i in 1:length(ggl)){
 ## distribution of ADTs by HTO
 
 ###
-
+rm(ggl)
 
 ```
 
@@ -331,6 +331,8 @@ temp_mat <- as.matrix(t(blood_sc@assays$ADT@counts))
 heatmap(log10(temp_mat[which(rowSums(temp_mat)>0),][1:3000,]+1), scale = "none", margin=c(7,4))
 rm(temp_mat)
 dev.off()
+
+save.image("prefilter.RData")
 ```
 
 ```{r}
@@ -374,18 +376,12 @@ blood_sc <- RunUMAP(blood_sc, reduction = 'apca', dims = 1:29, assay = 'ADT',
               reduction.name = 'umap.adt', reduction.key = 'adtUMAP_')
 
 
-
-
-```
-
-
-```{r}
 blood_sc <- FindMultiModalNeighbors(blood_sc, reduction.list = list("pca","lsi", "apca"), dims.list = list(1:50,2:50,1:29))
 
 #blood_sc <- FindMultiModalNeighbors(blood_sc, reduction.list = list("pca","lsi"), dims.list = list(1:50,2:50))
 blood_sc <- RunUMAP(blood_sc, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_")
 blood_sc <- FindClusters(blood_sc, graph.name = "wsnn", algorithm = 3, verbose = FALSE)
-#save.image()
+
 # 
 
 # blood_sc <- FindMultiModalNeighbors(blood_sc, reduction.list = list("pca","lsi", "apca"), dims.list = list(1:50,2:50,1:29))
@@ -393,6 +389,8 @@ blood_sc <- FindClusters(blood_sc, graph.name = "wsnn", algorithm = 3, verbose =
 # blood_sc <- RunUMAP(blood_sc, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_")
 # blood_sc <- FindClusters(blood_sc, graph.name = "wsnn", algorithm = 3, verbose = FALSE)
 
+
+save.image("postclustering.RData")
 ```
 
 ```{r}
@@ -403,9 +401,7 @@ if(!file.exists(files$pbmc_reference)){
 }
 
 reference <- LoadH5Seurat(files$pbmc_reference)
-```
 
-```{r}
 blood_sc <- SCTransform(blood_sc)
 anchors <- FindTransferAnchors(
   reference = reference,
@@ -429,38 +425,46 @@ blood_sc <- MapQuery(
   reduction.model = "wnn.umap"
 )
 
-p1 = DimPlot(blood_sc, reduction = "ref.umap", group.by = "predicted.celltype.l1", label = TRUE, label.size = 3, repel = TRUE) + NoLegend()
-p2 = DimPlot(blood_sc, reduction = "ref.umap", group.by = "predicted.celltype.l2", label = TRUE, label.size = 3 ,repel = TRUE) + NoLegend()
-
-png(paste0(dirs$figures,date,"_w_ReferenceAnchors.png"),
-    res = 300, width = 8, height = 6, units = "in")
-p1 + p2
-dev.off()
-
-
-p3 = DimPlot(blood_sc, reduction = "umap.atac") + NoLegend()
-p4 = DimPlot(blood_sc, reduction = "umap.rna") + NoLegend()
-p5 = DimPlot(blood_sc, reduction = "umap.adt") + NoLegend()
-p6 = DimPlot(blood_sc, reduction = "wnn.umap") + NoLegend()
-
-p3 + p4 + p5 + p6
-
-for(red in c("umap.atac", "umap.rna", "umap.adt","wnn.umap")){
-  png(paste0(dirs$figures,date,"_",red,".png"),
-      res = 220, width = 4, height = 6, units = "in")
-  p <- DimPlot(blood_sc, reduction = red) + NoLegend()
-  print(p)
-  dev.off()
-}
-rm(p,p1,p2,p3,p4,p5,p6)
-save.image()
+save.image("post_map_to_ref.RData")
 ```
+
 
 ```{r}
-#save.image()
+
+p1 = DimPlot(blood_sc, reduction = "ref.umap", group.by = "predicted.celltype.l1", label = TRUE, label.size = 3, repel = TRUE) + NoLegend()
+p2 = DimPlot(blood_sc, reduction = "ref.umap", group.by = "predicted.celltype.l2", label = TRUE, label.size = 3 ,repel = TRUE) + NoLegend()
+png(paste0(dirs$figures,"trimodal_reference_umap.png"), res = 300, width = 8, height = 6, units = "in")
+p1+p2
+dev.off()
+
+p1 = DimPlot(blood_sc, reduction = "umap.rna", group.by = "predicted.celltype.l1", label = TRUE, label.size = 3, repel = TRUE) + NoLegend()
+p2 = DimPlot(blood_sc, reduction = "umap.rna", group.by = "predicted.celltype.l2", label = TRUE, label.size = 3, repel = TRUE) + NoLegend()
+png(paste0(dirs$figures,"umap_rna.png"), res = 300, width = 8, height = 6, units = "in")
+p1+p2
+dev.off()
+
+p1 = DimPlot(blood_sc, reduction = "umap.atac", group.by = "predicted.celltype.l1", label = TRUE, label.size = 3, repel = TRUE) + NoLegend()
+p2 = DimPlot(blood_sc, reduction = "umap.atac", group.by = "predicted.celltype.l2", label = TRUE, label.size = 3, repel = TRUE) + NoLegend()
+png(paste0(dirs$figures,"umap_atac.png"), res = 300, width = 8, height = 6, units = "in")
+p1+p2
+dev.off()
+
+p1 = DimPlot(blood_sc, reduction = "umap.adt", group.by = "predicted.celltype.l1", label = TRUE, label.size = 3, repel = TRUE) + NoLegend()
+p2 = DimPlot(blood_sc, reduction = "umap.adt", group.by = "predicted.celltype.l2", label = TRUE, label.size = 3, repel = TRUE) + NoLegend()
+png(paste0(dirs$figures,"umap_adt.png"), res = 300, width = 8, height = 6, units = "in")
+p1+p2
+dev.off()
+
+p1 = DimPlot(blood_sc, reduction = "wnn.umap", group.by = "predicted.celltype.l1", label = TRUE, label.size = 3, repel = TRUE) + NoLegend()
+p2 = DimPlot(blood_sc, reduction = "wnn.umap", group.by = "predicted.celltype.l2", label = TRUE, label.size = 3, repel = TRUE) + NoLegend()
+png(paste0(dirs$figures,"trimodal_umap.png"), res = 300, width = 8, height = 6, units = "in")
+p1+p2
+dev.off()
+
+for()
+FeaturePlot(blood_sc, features="CD4 Naive", reduction = "wnn.umap")
+
 ```
-
-
 
 ```{r}
 ## differential analysis by cell type by patient Th+ Th- 
@@ -468,7 +472,6 @@ save.image()
 ## Th1 : all others
 hto_adt_subset_all <- hto_adt_subset_all[which(is.element(rownames(hto_adt_subset_all),
                                                           Cells(blood_sc))),]
- c(hto_adt_subset_all$class) 
 temp_hto <- hto_adt_subset_all$class
 names(temp_hto) <- rownames(hto_adt_subset_all)
 
@@ -477,19 +480,42 @@ temp_hto <- c(temp_hto, rep(NA,length(not_in_temp_hto) ))
 if(length(not_in_temp_hto) > 0){ names(temp_hto)[length(temp_hto)] <- not_in_temp_hto} 
 temp_hto <- temp_hto[match(names(temp_hto),Cells(blood_sc) )]
 
-all(names(temp_hto) == Cells(blood_sc) )
+if(!all(names(temp_hto) == Cells(blood_sc) )){stop("names mismatch in temp_hto")}
 
 blood_sc[["UCD"]] <- temp_hto
 
 th1 <-  c("UCD_17" , "KCMS_130", "UCD_9","UCLA_355","UCD_18", "UCD_8", "KCMS_133","KCMS_136")
 th2 <-  c("UCD_05" , "VFI_23", "KCMS_135","KCMS_177","UCLA_357", "UCLA_305", "UCLA_324","KCMS_238")
-ucd_th1_th2_map <- data.frame(
-  sample_name = c(th1, th2),
-  sample_type = c(rep("Th1", length(th1)),rep("Th2",length(th2)))
-)
+
+blood_sc$Th1_or_Th2 <- NA
+blood_sc$Th1_or_Th2[is.element(blood_sc$UCD, th1)]  <- "Th1"
+blood_sc$Th1_or_Th2[is.element(blood_sc$UCD, th2)]  <- "Th2"
+
+blood_sc$predicted.celltype.l1_and_Th <- paste0(blood_sc$predicted.celltype.l1,"_",blood_sc$Th1_or_Th2) 
+blood_sc$predicted.celltype.l2_and_Th <- paste0(blood_sc$predicted.celltype.l2,"_",blood_sc$Th1_or_Th2)
+
+blood_sc[["old.ident"]] <- Idents(blood_sc) 
+blood_sc <- StashIdent(blood_sc, save.name = "old.ident")
+Idents(blood_sc) <- "UCD"
+
+blood_sc_subset <- subset(x = blood_sc,  idents = th1 )
+p1 = DimPlot(blood_sc_subset, reduction = "ref.umap", group.by = "predicted.celltype.l2", label = TRUE, label.size = 3, repel = TRUE) + NoLegend()
+blood_sc_subset <- subset(x = blood_sc,  idents = th2 )
+p2 = DimPlot(blood_sc_subset, reduction = "ref.umap", group.by = "predicted.celltype.l2", label = TRUE, label.size = 3, repel = TRUE) + NoLegend()
+
+
+rm(blood_sc_subset)
+
+p_th1 + p_th2
+
+```
+
+
+
+```{r}
+
 ### .... subset ... cell type x patient -> estimate patient mean -> estimate group mean -> t.test between groups 
 
-ucd_th1_th2_map
 
 ncol = length(ucd_th1_th2_map$sample_name)
 pats <- ucd_th1_th2_map$sample_name
@@ -870,7 +896,7 @@ for(assay in c("RNA")){
   
   ## set up table
   
-
+rm(ggl)
 ```
 
 
